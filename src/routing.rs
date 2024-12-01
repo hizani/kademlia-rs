@@ -1,6 +1,6 @@
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, ops::Index, sync::Mutex};
+use std::{cmp::Ordering, net::SocketAddr, ops::Index, sync::Mutex};
 
 use crate::{
     key::{Distance, Key},
@@ -10,7 +10,7 @@ use crate::{
 #[derive(Hash, Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct NodeInfo {
     pub id: Key,
-    pub addr: String,
+    pub addr: SocketAddr,
     pub net_id: String,
 }
 
@@ -47,12 +47,12 @@ impl RoutingTable {
         for i in (1..=N_BUCKETS).rev() {
             buckets.push(Mutex::new(Vec::with_capacity(i.min(K_PARAM))));
         }
-        let ret = RoutingTable {
+        let routing_rable = RoutingTable {
             buckets,
             node_info: node_info.clone(),
         };
-        ret.update(node_info.clone());
-        ret
+        routing_rable.update(node_info.clone());
+        routing_rable
     }
 
     /// Update the appropriate bucket with the new node's info

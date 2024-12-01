@@ -13,13 +13,13 @@ pub struct Key([u8; KEY_LEN]);
 
 impl Key {
     /// Returns a random, KEY_LEN long byte string.
-    pub fn random() -> Key {
+    pub fn new() -> Key {
         Key(rand::random())
     }
 
     /// Returns the hashed Key of data.
-    pub fn hash(data: String) -> Key {
-        let hash = sha1::hash(data.as_bytes());
+    pub fn hash(data: &[u8]) -> Key {
+        let hash = sha1::hash(data);
         Key(hash.into_bytes())
     }
 

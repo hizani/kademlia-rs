@@ -1,7 +1,7 @@
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::net::UdpSocket;
+use std::net::{SocketAddr, UdpSocket};
 use std::str;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
@@ -51,7 +51,7 @@ impl ReqHandle {
             dst: self.src.clone(),
             msg: Message::Reply(rep),
         };
-        self.rpc.send_msg(&rep_rmsg, &self.src.addr);
+        self.rpc.send_msg(&rep_rmsg, self.src.addr);
     }
 }
 
@@ -69,14 +69,15 @@ impl Rpc {
             pending: Arc::new(Mutex::new(HashMap::new())),
             node_info: node_info,
         };
-        let ret = rpc.clone();
+
+        let rpc_clone = rpc.clone();
         thread::spawn(move || {
             let mut buf = [0u8; MESSAGE_LEN];
             loop {
                 let (len, src_addr) = rpc.socket.recv_from(&mut buf).unwrap();
                 let buf_str = String::from(str::from_utf8(&buf[..len]).unwrap());
                 let mut rmsg: RpcMessage = serde_json::from_str(&buf_str).unwrap();
-                rmsg.src.addr = src_addr.to_string();
+                rmsg.src.addr = src_addr;
 
                 debug!("|  IN | {:?} <== {:?} ", rmsg.msg, rmsg.src.id);
 
@@ -111,7 +112,7 @@ impl Rpc {
                 }
             }
         });
-        ret
+        rpc_clone
     }
 
     /// Passes a reply received through the Rpc socket to the appropriate pending Receiver
@@ -132,7 +133,7 @@ impl Rpc {
     }
 
     /// Sends a message
-    fn send_msg(&self, rmsg: &RpcMessage, addr: &str) {
+    fn send_msg(&self, rmsg: &RpcMessage, addr: SocketAddr) {
         let enc_msg = serde_json::to_vec(rmsg).unwrap();
         self.socket.send_to(&enc_msg, addr).unwrap();
         debug!("| OUT | {:?} ==> {:?} ", rmsg.msg, rmsg.dst.id);
@@ -142,9 +143,9 @@ impl Rpc {
     pub fn send_req(&self, req: Request, dst: NodeInfo) -> Receiver<Option<Reply>> {
         let (tx, rx) = mpsc::channel();
         let mut pending = self.pending.lock().unwrap();
-        let mut token = Key::random();
+        let mut token = Key::new();
         while pending.contains_key(&token) {
-            token = Key::random();
+            token = Key::new();
         }
         pending.insert(token, tx.clone());
         drop(pending);
@@ -155,7 +156,7 @@ impl Rpc {
             dst: dst,
             msg: Message::Request(req),
         };
-        self.send_msg(&rmsg, &rmsg.dst.addr);
+        self.send_msg(&rmsg, rmsg.dst.addr);
 
         let rpc = self.clone();
         thread::spawn(move || {

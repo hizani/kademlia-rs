@@ -1,6 +1,6 @@
 use const_hex::FromHex;
 use kademlia::*;
-use std::io;
+use std::{io, net::SocketAddr, str::FromStr};
 
 const HELP: &str = r"help                            ..print help message
 put <string key> <string value> ..store value at key
@@ -26,21 +26,21 @@ fn main() {
     } else {
         Some(NodeInfo {
             id: Key::from_hex(params[1]).unwrap(),
-            addr: String::from(params[0]),
+            addr: SocketAddr::from_str(params[0]).unwrap(),
             net_id: String::from("test_net"),
         })
     };
     let handle = Kademlia::start(
         String::from("test_net"),
-        Key::random(),
-        "127.0.0.1:0",
+        Key::new(),
+        SocketAddr::from_str("127.0.0.1:0").unwrap(),
         bootstrap,
     );
 
     let mut dummy_info = NodeInfo {
         net_id: String::from("test_net"),
-        addr: String::from("asdfasdf"),
-        id: Key::random(),
+        addr: SocketAddr::from_str("127.0.0.1:0").unwrap(),
+        id: Key::new(),
     };
 
     loop {
@@ -50,28 +50,21 @@ fn main() {
         }
         let args = buffer.trim_end().split(' ').collect::<Vec<_>>();
         match args[0].as_ref() {
-            "h" => {
+            "h" | "help" => {
                 println!("{}", HELP)
             }
             "p" => {
-                dummy_info.addr = String::from(args[1]);
+                dummy_info.addr = SocketAddr::from_str(args[1]).unwrap();
                 dummy_info.id = Key::from_hex(args[2]).unwrap();
                 println!("{:?}", handle.ping(dummy_info.clone()));
             }
             "s" => {
-                dummy_info.addr = String::from(args[1]);
+                dummy_info.addr = SocketAddr::from_str(args[1]).unwrap();
                 dummy_info.id = Key::from_hex(args[2]).unwrap();
-                println!(
-                    "{:?}",
-                    handle.store(
-                        dummy_info.clone(),
-                        String::from(args[3]),
-                        String::from(args[4])
-                    )
-                );
+                println!("{:?}", handle.store(dummy_info.clone(), args[3], args[4]));
             }
             "fn" => {
-                dummy_info.addr = String::from(args[1]);
+                dummy_info.addr = SocketAddr::from_str(args[1]).unwrap();
                 dummy_info.id = Key::from_hex(args[2]).unwrap();
                 println!(
                     "{:?}",
@@ -79,27 +72,21 @@ fn main() {
                 );
             }
             "fv" => {
-                dummy_info.addr = String::from(args[1]);
+                dummy_info.addr = SocketAddr::from_str(args[1]).unwrap();
                 dummy_info.id = Key::from_hex(args[2]).unwrap();
-                println!(
-                    "{:?}",
-                    handle.find_value(dummy_info.clone(), String::from(args[3]))
-                );
+                println!("{:?}", handle.find_value(dummy_info.clone(), args[3]));
             }
             "ln" => {
                 println!("{:?}", handle.lookup_nodes(Key::from_hex(args[1]).unwrap()));
             }
             "lv" => {
-                println!("{:?}", handle.lookup_value(String::from(args[1])));
+                println!("{:?}", handle.lookup_value(args[1]));
             }
             "put" => {
-                println!(
-                    "{:?}",
-                    handle.put(String::from(args[1]), String::from(args[2]))
-                );
+                println!("{:?}", handle.put(args[1], args[2]));
             }
             "get" => {
-                println!("{:?}", handle.get(String::from(args[1])));
+                println!("{:?}", handle.get(args[1]));
             }
             _ => {
                 println!("no match");
