@@ -108,6 +108,10 @@ impl RoutingTable {
                 (self.buckets.get(left_index), self.buckets.get(right_index))
             };
 
+            if check_buckets.0.is_none() && check_buckets.1.is_none() {
+                break;
+            }
+
             if let Some(left_bucket) = check_buckets.0 {
                 closest_nodes.extend(left_bucket.lock().unwrap().iter().map(|node_info| {
                     NodeAndDistance(node_info.clone(), node_info.id.distance(item))
