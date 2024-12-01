@@ -1,8 +1,11 @@
 [package]
+authors = [
+    "Junseok Lee <lee.junseok@berkeley.edu>",
+    "hizani <78748751+hizani@users.noreply.github.com>",
+]
 name = "kademlia"
 version = "0.0.1"
 edition = "2021"
-authors = ["Junseok Lee <lee.junseok@berkeley.edu>"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
