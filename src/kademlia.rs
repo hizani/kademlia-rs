@@ -36,7 +36,7 @@ pub enum Reply {
 
 #[derive(Clone)]
 pub struct Kademlia {
-    routes: Arc<Mutex<RoutingTable>>,
+    routes: Arc<RoutingTable>,
     store: Arc<Mutex<HashMap<String, String>>>,
     rpc: Arc<Rpc>,
     node_info: NodeInfo,
@@ -56,7 +56,7 @@ impl Kademlia {
             addr: socket.local_addr().unwrap().to_string(), // err: failed to retrieve local addr
             net_id: net_id,
         };
-        let mut routes = RoutingTable::new(node_info.clone());
+        let routes = RoutingTable::new(node_info.clone());
         if let Some(bootstrap) = bootstrap {
             routes.update(bootstrap);
         }
@@ -69,14 +69,13 @@ impl Kademlia {
         let rpc = Rpc::open(socket, tx, node_info.clone());
 
         let node = Kademlia {
-            routes: Arc::new(Mutex::new(routes)),
+            routes: Arc::new(routes),
+            node_info,
             store: Arc::new(Mutex::new(HashMap::new())),
-            node_info: node_info,
             rpc: Arc::new(rpc),
         };
 
         node.clone().start_req_handler(rx);
-
         node.lookup_nodes(node_id);
 
         node
@@ -97,9 +96,7 @@ impl Kademlia {
     }
 
     fn handle_req(&self, req: Request, src: NodeInfo) -> Reply {
-        let mut routes = self.routes.lock().unwrap();
-        routes.update(src);
-        drop(routes);
+        self.routes.update(src);
         match req {
             Request::Ping => Reply::Ping,
             Request::Store(k, v) => {
@@ -108,11 +105,7 @@ impl Kademlia {
 
                 Reply::Ping
             }
-            Request::FindNode(id) => {
-                let routes = self.routes.lock().unwrap();
-
-                Reply::FindNode(routes.closest_nodes(id, K_PARAM))
-            }
+            Request::FindNode(id) => Reply::FindNode(self.routes.closest_nodes(id, K_PARAM)),
             Request::FindValue(k) => {
                 let hash = Key::hash(k.clone());
 
@@ -122,12 +115,9 @@ impl Kademlia {
 
                 match lookup_res {
                     Some(v) => Reply::FindValue(FindValueResult::Value(v)),
-                    None => {
-                        let routes = self.routes.lock().unwrap();
-                        Reply::FindValue(FindValueResult::Nodes(
-                            routes.closest_nodes(hash, K_PARAM),
-                        ))
-                    }
+                    None => Reply::FindValue(FindValueResult::Nodes(
+                        self.routes.closest_nodes(hash, K_PARAM),
+                    )),
                 }
             }
         }
@@ -151,48 +141,44 @@ impl Kademlia {
 
     pub fn ping(&self, dst: NodeInfo) -> Option<()> {
         let rep = self.ping_raw(dst.clone()).recv().unwrap(); // err: pending reply channel closed
-        let mut routes = self.routes.lock().unwrap();
         if let Some(Reply::Ping) = rep {
-            routes.update(dst);
+            self.routes.update(dst);
             Some(())
         } else {
-            routes.remove(&dst);
+            self.routes.remove(&dst);
             None
         }
     }
 
     pub fn store(&self, dst: NodeInfo, k: String, v: String) -> Option<()> {
         let rep = self.store_raw(dst.clone(), k, v).recv().unwrap(); // err: pending reply channel closed
-        let mut routes = self.routes.lock().unwrap();
         if let Some(Reply::Ping) = rep {
-            routes.update(dst);
+            self.routes.update(dst);
             Some(())
         } else {
-            routes.remove(&dst);
+            self.routes.remove(&dst);
             None
         }
     }
 
     pub fn find_node(&self, dst: NodeInfo, id: Key) -> Option<Vec<NodeAndDistance>> {
         let rep = self.find_node_raw(dst.clone(), id).recv().unwrap(); // err: pending reply channel closed
-        let mut routes = self.routes.lock().unwrap();
         if let Some(Reply::FindNode(entries)) = rep {
-            routes.update(dst);
+            self.routes.update(dst);
             Some(entries)
         } else {
-            routes.remove(&dst);
+            self.routes.remove(&dst);
             None
         }
     }
 
     pub fn find_value(&self, dst: NodeInfo, k: String) -> Option<FindValueResult> {
         let rep = self.find_value_raw(dst.clone(), k).recv().unwrap(); // err: pending reply channel closed
-        let mut routes = self.routes.lock().unwrap();
         if let Some(Reply::FindValue(res)) = rep {
-            routes.update(dst);
+            self.routes.update(dst);
             Some(res)
         } else {
-            routes.remove(&dst);
+            self.routes.remove(&dst);
             None
         }
     }
@@ -202,9 +188,7 @@ impl Kademlia {
         let mut ret = HashSet::new();
 
         // Add the closest nodes we know to our queue of nodes to query
-        let routes = self.routes.lock().unwrap();
-        let mut to_query = BinaryHeap::from(routes.closest_nodes(id, K_PARAM));
-        drop(routes);
+        let mut to_query = BinaryHeap::from(self.routes.closest_nodes(id, K_PARAM));
 
         for entry in &to_query {
             queried.insert(entry.clone());
@@ -256,9 +240,7 @@ impl Kademlia {
         let mut ret = HashSet::new();
 
         // Add the closest nodes we know to our queue of nodes to query
-        let routes = self.routes.lock().unwrap();
-        let mut to_query = BinaryHeap::from(routes.closest_nodes(id, K_PARAM));
-        drop(routes);
+        let mut to_query = BinaryHeap::from(self.routes.closest_nodes(id, K_PARAM));
 
         for entry in &to_query {
             queried.insert(entry.clone());
@@ -341,7 +323,6 @@ impl Kademlia {
     }
 
     pub fn print_routes(&self) {
-        let routes = self.routes.lock().unwrap();
-        routes.print();
+        self.routes.print();
     }
 }

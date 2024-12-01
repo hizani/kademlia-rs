@@ -1,6 +1,6 @@
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
+use std::{cmp::Ordering, ops::Index, sync::Mutex};
 
 use crate::{
     key::{Distance, Key},
@@ -17,7 +17,7 @@ pub struct NodeInfo {
 #[derive(Debug)]
 pub struct RoutingTable {
     node_info: NodeInfo,
-    buckets: Vec<Vec<NodeInfo>>,
+    buckets: Vec<Mutex<Vec<NodeInfo>>>,
 }
 
 #[derive(Eq, Hash, Clone, Debug, Serialize, Deserialize)]
@@ -45,20 +45,21 @@ impl RoutingTable {
     pub fn new(node_info: NodeInfo) -> RoutingTable {
         let mut buckets = Vec::new();
         for _ in 0..N_BUCKETS {
-            buckets.push(Vec::new());
+            buckets.push(Mutex::new(Vec::new()));
         }
-        let mut ret = RoutingTable {
+        let ret = RoutingTable {
+            buckets,
             node_info: node_info.clone(),
-            buckets: buckets,
         };
         ret.update(node_info.clone());
         ret
     }
 
     /// Update the appropriate bucket with the new node's info
-    pub fn update(&mut self, node_info: NodeInfo) {
+    pub fn update(&self, node_info: NodeInfo) {
         let bucket_index = self.lookup_bucket_index(node_info.id);
-        let bucket = &mut self.buckets[bucket_index];
+        let table = &self.buckets;
+        let mut bucket = table[bucket_index].lock().unwrap();
         let node_index = bucket.iter().position(|x| x.id == node_info.id);
         match node_index {
             Some(i) => {
@@ -85,8 +86,8 @@ impl RoutingTable {
             return Vec::new();
         }
         let mut ret = Vec::with_capacity(count);
-        for bucket in &self.buckets {
-            for node_info in bucket {
+        for bucket in self.buckets.iter() {
+            for node_info in bucket.lock().unwrap().iter() {
                 ret.push(NodeAndDistance(
                     node_info.clone(),
                     node_info.id.distance(item),
@@ -98,13 +99,12 @@ impl RoutingTable {
         ret
     }
 
-    pub fn remove(&mut self, node_info: &NodeInfo) {
+    pub fn remove(&self, node_info: &NodeInfo) {
         let bucket_index = self.lookup_bucket_index(node_info.id);
-        if let Some(item_index) = self.buckets[bucket_index]
-            .iter()
-            .position(|x| x == node_info)
-        {
-            self.buckets[bucket_index].remove(item_index);
+        let table = &self.buckets;
+        let mut bucket = table.index(bucket_index).lock().unwrap();
+        if let Some(item_index) = bucket.iter().position(|x| x == node_info) {
+            bucket.remove(item_index);
         } else {
             warn!("Tried to remove routing entry that doesn't exist.");
         }
