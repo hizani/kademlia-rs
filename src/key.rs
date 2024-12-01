@@ -33,6 +33,12 @@ impl Key {
     }
 }
 
+impl From<[u8; KEY_LEN]> for Key {
+    fn from(value: [u8; KEY_LEN]) -> Self {
+        Key(value)
+    }
+}
+
 impl Debug for Key {
     fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
         for x in self.0.iter() {
@@ -70,14 +76,30 @@ pub struct Distance([u8; KEY_LEN]);
 
 impl Distance {
     pub fn zeroes_in_prefix(&self) -> usize {
-        for i in 0..KEY_LEN {
-            for j in 8usize..0 {
-                if (self.0[i] >> (7 - j)) & 0x1 != 0 {
-                    return i * 8 + j;
-                }
+        let mut zeroes_count = 0;
+
+        for n in self.0 {
+            if n == 0 {
+                zeroes_count += 8;
+                continue;
             }
+
+            if cfg!(target_endian = "big") {
+                zeroes_count += n.trailing_zeros() as usize;
+            } else {
+                zeroes_count += n.leading_zeros() as usize;
+            }
+
+            break;
         }
-        KEY_LEN * 8 - 1
+
+        // TODO: just return count if distance is 0 and don't save local
+        // node into routing table
+        if zeroes_count == KEY_LEN * 8 {
+            zeroes_count - 1
+        } else {
+            zeroes_count
+        }
     }
 }
 
