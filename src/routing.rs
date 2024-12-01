@@ -1,8 +1,13 @@
+use log::{info, warn};
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use ::{N_BUCKETS,K_PARAM};
-use ::key::{Distance,Key};
 
-#[derive(Hash,Eq,PartialEq,Debug,Clone,RustcEncodable,RustcDecodable)]
+use crate::{
+    key::{Distance, Key},
+    K_PARAM, N_BUCKETS,
+};
+
+#[derive(Hash, Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct NodeInfo {
     pub id: Key,
     pub addr: String,
@@ -12,10 +17,10 @@ pub struct NodeInfo {
 #[derive(Debug)]
 pub struct RoutingTable {
     node_info: NodeInfo,
-    buckets: Vec<Vec<NodeInfo>>
+    buckets: Vec<Vec<NodeInfo>>,
 }
 
-#[derive(Eq,Hash,Clone,Debug,RustcEncodable,RustcDecodable)]
+#[derive(Eq, Hash, Clone, Debug, Serialize, Deserialize)]
 pub struct NodeAndDistance(pub NodeInfo, pub Distance);
 
 impl PartialEq for NodeAndDistance {
@@ -44,7 +49,7 @@ impl RoutingTable {
         }
         let mut ret = RoutingTable {
             node_info: node_info.clone(),
-            buckets: buckets
+            buckets: buckets,
         };
         ret.update(node_info.clone());
         ret
@@ -82,17 +87,23 @@ impl RoutingTable {
         let mut ret = Vec::with_capacity(count);
         for bucket in &self.buckets {
             for node_info in bucket {
-                ret.push( NodeAndDistance(node_info.clone(), node_info.id.dist(item)) );
+                ret.push(NodeAndDistance(
+                    node_info.clone(),
+                    node_info.id.distance(item),
+                ));
             }
         }
-        ret.sort_by(|a,b| a.1.cmp(&b.1));
+        ret.sort_by(|a, b| a.1.cmp(&b.1));
         ret.truncate(count);
         ret
     }
 
     pub fn remove(&mut self, node_info: &NodeInfo) {
         let bucket_index = self.lookup_bucket_index(node_info.id);
-        if let Some(item_index) = self.buckets[bucket_index].iter().position(|x| x == node_info) {
+        if let Some(item_index) = self.buckets[bucket_index]
+            .iter()
+            .position(|x| x == node_info)
+        {
             self.buckets[bucket_index].remove(item_index);
         } else {
             warn!("Tried to remove routing entry that doesn't exist.");
@@ -100,7 +111,7 @@ impl RoutingTable {
     }
 
     fn lookup_bucket_index(&self, item: Key) -> usize {
-        self.node_info.id.dist(item).zeroes_in_prefix()
+        self.node_info.id.distance(item).zeroes_in_prefix()
     }
 
     pub fn print(&self) {

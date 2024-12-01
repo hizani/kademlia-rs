@@ -1,19 +1,21 @@
+use log::{debug, info, warn};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::UdpSocket;
 use std::str;
-use std::sync::{Arc,Mutex};
 use std::sync::mpsc;
-use std::sync::mpsc::{Receiver,Sender};
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use rustc_serialize::json;
 
-use ::{MESSAGE_LEN,TIMEOUT};
-use ::kademlia::{Reply,Request};
-use ::key::Key;
-use ::routing::NodeInfo;
+use crate::{
+    kademlia::{Reply, Request},
+    routing::NodeInfo,
+    Key, MESSAGE_LEN, TIMEOUT,
+};
 
-#[derive(Clone,Debug,RustcEncodable,RustcDecodable)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RpcMessage {
     token: Key,
     src: NodeInfo,
@@ -21,7 +23,7 @@ pub struct RpcMessage {
     msg: Message,
 }
 
-#[derive(Clone,Debug,RustcEncodable,RustcDecodable)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Message {
     Kill,
     Request(Request),
@@ -54,9 +56,9 @@ impl ReqHandle {
 }
 
 #[derive(Clone)]
-pub struct Rpc {
+pub(crate) struct Rpc {
     socket: Arc<UdpSocket>,
-    pending: Arc<Mutex<HashMap<Key,Sender<Option<Reply>>>>>,
+    pending: Arc<Mutex<HashMap<Key, Sender<Option<Reply>>>>>,
     node_info: NodeInfo,
 }
 
@@ -73,7 +75,7 @@ impl Rpc {
             loop {
                 let (len, src_addr) = rpc.socket.recv_from(&mut buf).unwrap();
                 let buf_str = String::from(str::from_utf8(&buf[..len]).unwrap());
-                let mut rmsg = json::decode::<RpcMessage>(&buf_str).unwrap();
+                let mut rmsg: RpcMessage = serde_json::from_str(&buf_str).unwrap();
                 rmsg.src.addr = src_addr.to_string();
 
                 debug!("|  IN | {:?} <== {:?} ", rmsg.msg, rmsg.src.id);
@@ -117,9 +119,7 @@ impl Rpc {
         thread::spawn(move || {
             let mut pending = self.pending.lock().unwrap();
             let send_res = match pending.get(&token) {
-                Some(tx) => {
-                    tx.send(Some(rep))
-                }
+                Some(tx) => tx.send(Some(rep)),
                 None => {
                     warn!("Unsolicited reply received, ignoring.");
                     return;
@@ -133,8 +133,8 @@ impl Rpc {
 
     /// Sends a message
     fn send_msg(&self, rmsg: &RpcMessage, addr: &str) {
-        let enc_msg = json::encode(rmsg).unwrap();
-        self.socket.send_to(&enc_msg.as_bytes(), addr).unwrap();
+        let enc_msg = serde_json::to_vec(rmsg).unwrap();
+        self.socket.send_to(&enc_msg, addr).unwrap();
         debug!("| OUT | {:?} ==> {:?} ", rmsg.msg, rmsg.dst.id);
     }
 
@@ -149,7 +149,7 @@ impl Rpc {
         pending.insert(token, tx.clone());
         drop(pending);
 
-        let rmsg = RpcMessage { 
+        let rmsg = RpcMessage {
             token: token,
             src: self.node_info.clone(),
             dst: dst,

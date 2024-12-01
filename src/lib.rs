@@ -1,13 +1,7 @@
-#[macro_use]
-extern crate log;
-extern crate crypto;
-extern crate rand;
-extern crate rustc_serialize;
-
 mod kademlia;
 mod key;
-mod rpc;
 mod routing;
+mod rpc;
 
 pub use kademlia::Kademlia;
 pub use key::Key;

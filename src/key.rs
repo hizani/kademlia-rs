@@ -1,38 +1,30 @@
-use std::fmt::{Debug,Error,Formatter};
-use crypto::digest::Digest;
-use crypto::sha1::Sha1;
-use rand;
-use rustc_serialize::{Decodable,Decoder,Encodable,Encoder};
-use rustc_serialize::hex::FromHex;
+use const_hex::FromHex;
+use hashes::sha1;
+use serde::{Deserialize, Serialize};
+use std::{
+    fmt::{Debug, Error, Formatter},
+    str::FromStr,
+};
 
-use ::KEY_LEN;
+use crate::KEY_LEN;
 
-#[derive(Hash,Ord,PartialOrd,Eq,PartialEq,Copy,Clone)]
+#[derive(Hash, Ord, PartialOrd, Eq, PartialEq, Copy, Clone, Deserialize, Serialize)]
 pub struct Key([u8; KEY_LEN]);
 
 impl Key {
     /// Returns a random, KEY_LEN long byte string.
     pub fn random() -> Key {
-        let mut res = [0; KEY_LEN];
-        for i in 0usize..KEY_LEN {
-            res[i] = rand::random::<u8>();
-        }
-        Key(res)
+        Key(rand::random())
     }
 
     /// Returns the hashed Key of data.
     pub fn hash(data: String) -> Key {
-        let mut hasher = Sha1::new();
-        hasher.input_str(&data);
-        let mut hash = [0u8; KEY_LEN];
-        for (i, b) in hasher.result_str().as_bytes().iter().take(KEY_LEN).enumerate() {
-            hash[i] = *b;
-        }
-        Key(hash)
+        let hash = sha1::hash(data.as_bytes());
+        Key(hash.into_bytes())
     }
 
     /// XORs two Keys
-    pub fn dist(&self, y: Key) -> Distance{
+    pub fn distance(&self, y: Key) -> Distance {
         let mut res = [0; KEY_LEN];
         for i in 0usize..KEY_LEN {
             res[i] = self.0[i] ^ y.0[i];
@@ -44,49 +36,36 @@ impl Key {
 impl Debug for Key {
     fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
         for x in self.0.iter() {
-            try!(write!(f, "{0:02x}", x));
+            write!(f, "{0:02x}", x)?;
         }
         Ok(())
     }
 }
 
-impl From<String> for Key {
-    fn from(s: String) -> Key {
-        let mut ret = [0; KEY_LEN];
-        for (i, byte) in s.from_hex().unwrap().iter().enumerate() {
-            ret[i] = *byte;
-        }
-        Key(ret)
+impl FromStr for Key {
+    type Err = const_hex::FromHexError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Key::from_hex(s)
     }
 }
 
-impl Decodable for Key {
-    fn decode<D: Decoder>(d: &mut D) -> Result<Key, D::Error> {
-        d.read_seq(|d, len| {
-            if len != KEY_LEN {
-                return Err(d.error("Wrong length key!"));
-            }
-            let mut ret = [0; KEY_LEN];
-            for i in 0..KEY_LEN {
-                ret[i] = try!(d.read_seq_elt(i, Decodable::decode));
-            }
-            Ok(Key(ret))
-        })
+impl AsRef<[u8]> for Key {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
     }
 }
 
-impl Encodable for Key {
-    fn encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
-        s.emit_seq(KEY_LEN, |s| {
-            for i in 0..KEY_LEN {
-                try!(s.emit_seq_elt(i, |s| self.0[i].encode(s)));
-            }
-            Ok(())
-        })
+impl FromHex for Key {
+    type Error = const_hex::FromHexError;
+
+    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+        let mut key = [0u8; KEY_LEN];
+        const_hex::decode_to_slice(hex, &mut key)?;
+        Ok(Key(key))
     }
 }
 
-#[derive(Hash,Ord,PartialOrd,Eq,PartialEq,Copy,Clone)]
+#[derive(Hash, Ord, PartialOrd, Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
 pub struct Distance([u8; KEY_LEN]);
 
 impl Distance {
@@ -105,34 +84,24 @@ impl Distance {
 impl Debug for Distance {
     fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
         for x in self.0.iter() {
-            try!(write!(f, "{0:02x}", x));
+            write!(f, "{0:02x}", x)?;
         }
         Ok(())
     }
 }
 
-impl Decodable for Distance {
-    fn decode<D: Decoder>(d: &mut D) -> Result<Distance, D::Error> {
-        d.read_seq(|d, len| {
-            if len != KEY_LEN {
-                return Err(d.error("Wrong length key!"));
-            }
-            let mut ret = [0; KEY_LEN];
-            for i in 0..KEY_LEN {
-                ret[i] = try!(d.read_seq_elt(i, Decodable::decode));
-            }
-            Ok(Distance(ret))
-        })
+impl AsRef<[u8]> for Distance {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
     }
 }
 
-impl Encodable for Distance {
-    fn encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
-        s.emit_seq(KEY_LEN, |s| {
-            for i in 0..KEY_LEN {
-                try!(s.emit_seq_elt(i, |s| self.0[i].encode(s)));
-            }
-            Ok(())
-        })
+impl FromHex for Distance {
+    type Error = const_hex::FromHexError;
+
+    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+        let mut distance = [0u8; KEY_LEN];
+        const_hex::decode_to_slice(hex, &mut distance)?;
+        Ok(Distance(distance))
     }
 }

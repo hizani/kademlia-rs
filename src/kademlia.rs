@@ -1,17 +1,19 @@
-use std::collections::{HashMap,HashSet,BinaryHeap};
+use log::info;
+use serde::{Deserialize, Serialize};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::net::UdpSocket;
-use std::sync::{Arc,Mutex};
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
 use std::thread;
-use rustc_serialize::{Decoder,Encodable,Encoder};
 
-use ::{A_PARAM,K_PARAM};
-use ::key::Key;
-use ::rpc::{ReqHandle,Rpc};
-use ::routing::{NodeAndDistance,NodeInfo,RoutingTable};
+use crate::{
+    routing::{NodeAndDistance, NodeInfo, RoutingTable},
+    rpc::{ReqHandle, Rpc},
+    Key, A_PARAM, K_PARAM,
+};
 
-#[derive(Clone,Debug,RustcEncodable,RustcDecodable)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Request {
     Ping,
     Store(String, String),
@@ -19,13 +21,13 @@ pub enum Request {
     FindValue(String),
 }
 
-#[derive(Clone,Debug,RustcEncodable,RustcDecodable)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum FindValueResult {
     Nodes(Vec<NodeAndDistance>),
     Value(String),
 }
 
-#[derive(Clone,Debug,RustcEncodable,RustcDecodable)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Reply {
     Ping,
     FindNode(Vec<NodeAndDistance>),
@@ -42,7 +44,12 @@ pub struct Kademlia {
 
 /// A Kademlia node
 impl Kademlia {
-    pub fn start(net_id: String, node_id: Key, node_addr: &str, bootstrap: Option<NodeInfo>) -> Kademlia {
+    pub fn start(
+        net_id: String,
+        node_id: Key,
+        node_addr: &str,
+        bootstrap: Option<NodeInfo>,
+    ) -> Kademlia {
         let socket = UdpSocket::bind(node_addr).unwrap(); // err: failed to bind to socket
         let node_info = NodeInfo {
             id: node_id.clone(),
@@ -53,7 +60,10 @@ impl Kademlia {
         if let Some(bootstrap) = bootstrap {
             routes.update(bootstrap);
         }
-        info!("New node created at {} with ID {:?}", &node_info.addr, &node_info.id);
+        info!(
+            "New node created at {} with ID {:?}",
+            &node_info.addr, &node_info.id
+        );
 
         let (tx, rx) = mpsc::channel();
         let rpc = Rpc::open(socket, tx, node_info.clone());
@@ -77,8 +87,8 @@ impl Kademlia {
             for req_handle in rx.iter() {
                 let node = self.clone();
                 thread::spawn(move || {
-                    let rep = node.handle_req(req_handle.get_req().clone(),
-                                              req_handle.get_src().clone());
+                    let rep =
+                        node.handle_req(req_handle.get_req().clone(), req_handle.get_src().clone());
                     req_handle.rep(rep);
                 });
             }
@@ -91,9 +101,7 @@ impl Kademlia {
         routes.update(src);
         drop(routes);
         match req {
-            Request::Ping => {
-                Reply::Ping
-            }
+            Request::Ping => Reply::Ping,
             Request::Store(k, v) => {
                 let mut store = self.store.lock().unwrap();
                 store.insert(k, v);
@@ -113,12 +121,12 @@ impl Kademlia {
                 drop(store);
 
                 match lookup_res {
-                    Some(v) => {
-                        Reply::FindValue(FindValueResult::Value(v))
-                    }
+                    Some(v) => Reply::FindValue(FindValueResult::Value(v)),
                     None => {
                         let routes = self.routes.lock().unwrap();
-                        Reply::FindValue(FindValueResult::Nodes(routes.closest_nodes(hash, K_PARAM)))
+                        Reply::FindValue(FindValueResult::Nodes(
+                            routes.closest_nodes(hash, K_PARAM),
+                        ))
                     }
                 }
             }
@@ -208,16 +216,18 @@ impl Kademlia {
             let mut results = Vec::new();
             for _ in 0..A_PARAM {
                 match to_query.pop() {
-                    Some(entry) => { queries.push(entry); }
-                    None => { break; }
+                    Some(entry) => {
+                        queries.push(entry);
+                    }
+                    None => {
+                        break;
+                    }
                 }
             }
             for &NodeAndDistance(ref ni, _) in &queries {
                 let ni = ni.clone();
                 let node = self.clone();
-                joins.push(thread::spawn(move || {
-                    node.find_node(ni.clone(), id)
-                }));
+                joins.push(thread::spawn(move || node.find_node(ni.clone(), id)));
             }
             for j in joins {
                 results.push(j.join().unwrap());
@@ -235,7 +245,7 @@ impl Kademlia {
         }
 
         let mut ret = ret.into_iter().collect::<Vec<_>>();
-        ret.sort_by(|a,b| a.1.cmp(&b.1));
+        ret.sort_by(|a, b| a.1.cmp(&b.1));
         ret.truncate(K_PARAM);
         ret
     }
@@ -260,17 +270,19 @@ impl Kademlia {
             let mut results = Vec::new();
             for _ in 0..A_PARAM {
                 match to_query.pop() {
-                    Some(entry) => { queries.push(entry); }
-                    None => { break; }
+                    Some(entry) => {
+                        queries.push(entry);
+                    }
+                    None => {
+                        break;
+                    }
                 }
             }
             for &NodeAndDistance(ref ni, _) in &queries {
                 let k = k.clone();
                 let ni = ni.clone();
                 let node = self.clone();
-                joins.push(thread::spawn(move || {
-                    node.find_value(ni.clone(), k)
-                }));
+                joins.push(thread::spawn(move || node.find_value(ni.clone(), k)));
             }
             for j in joins {
                 results.push(j.join().unwrap());
@@ -288,7 +300,7 @@ impl Kademlia {
                         }
                         FindValueResult::Value(val) => {
                             let mut ret = ret.into_iter().collect::<Vec<_>>();
-                            ret.sort_by(|a,b| a.1.cmp(&b.1));
+                            ret.sort_by(|a, b| a.1.cmp(&b.1));
                             ret.truncate(K_PARAM);
                             return (Some(val), ret);
                         }
@@ -298,7 +310,7 @@ impl Kademlia {
         }
 
         let mut ret = ret.into_iter().collect::<Vec<_>>();
-        ret.sort_by(|a,b| a.1.cmp(&b.1));
+        ret.sort_by(|a, b| a.1.cmp(&b.1));
         ret.truncate(K_PARAM);
 
         (None, ret)
