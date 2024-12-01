@@ -43,9 +43,9 @@ impl Ord for NodeAndDistance {
 
 impl RoutingTable {
     pub fn new(node_info: NodeInfo) -> RoutingTable {
-        let mut buckets = Vec::new();
-        for _ in 0..N_BUCKETS {
-            buckets.push(Mutex::new(Vec::new()));
+        let mut buckets = Vec::with_capacity(N_BUCKETS);
+        for i in (1..=N_BUCKETS).rev() {
+            buckets.push(Mutex::new(Vec::with_capacity(i.min(K_PARAM))));
         }
         let ret = RoutingTable {
             buckets,
