@@ -2,6 +2,18 @@ use const_hex::FromHex;
 use kademlia::*;
 use std::io;
 
+const HELP: &str = r"help                            ..print help message
+put <string key> <string value> ..store value at key
+get <string key>                ..lookup value at key
+======\/ lower level \/======
+p <ip>:<port> <key>  ..pings the node
+s <ip>:<port> <key>  ..sends store req to node
+fn <ip>:<port> <key> ..sends find_node req to node
+fv <ip>:<port> <key> ..sends find_value req to node
+ln <key>             ..performs iterative node lookup
+lv <string key>      ..performs iterative value lookup
+";
+
 fn main() {
     env_logger::init();
 
@@ -38,6 +50,9 @@ fn main() {
         }
         let args = buffer.trim_end().split(' ').collect::<Vec<_>>();
         match args[0].as_ref() {
+            "h" => {
+                println!("{}", HELP)
+            }
             "p" => {
                 dummy_info.addr = String::from(args[1]);
                 dummy_info.id = Key::from_hex(args[2]).unwrap();

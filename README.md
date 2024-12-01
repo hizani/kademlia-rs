@@ -26,6 +26,7 @@ Once a node starts, it will log its information (IP,Port,Key) to stdout PROVIDED
 
 At this point, you can enter some commands:
 
+    help                            ..print help message
     put <string key> <string value> ..store value at key
     get <string key>                ..lookup value at key
     ======\/ lower level \/======
