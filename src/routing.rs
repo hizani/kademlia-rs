@@ -51,13 +51,18 @@ impl RoutingTable {
             buckets,
             node_info: node_info.clone(),
         };
-        routing_rable.update(node_info.clone());
         routing_rable
     }
 
     /// Update the appropriate bucket with the new node's info
     pub fn update(&self, node_info: NodeInfo) {
-        let bucket_index = self.lookup_bucket_index(node_info.id);
+        let bucket_index =
+            if let Some(bi) = self.lookup_bucket_index(self.node_info.id.distance(node_info.id)) {
+                bi
+            } else {
+                return;
+            };
+
         let mut bucket = self.buckets[bucket_index].lock().unwrap();
         let node_index = bucket.iter().position(|x| x.id == node_info.id);
         match node_index {
@@ -69,7 +74,7 @@ impl RoutingTable {
                 if bucket.len() < K_PARAM {
                     bucket.push(node_info);
                 } else {
-                    // go through bucket, pinging nodes, replace one
+                    // TODO: go through bucket, pinging nodes, replace one
                     // that doesn't respond.
                 }
             }
@@ -82,7 +87,13 @@ impl RoutingTable {
             return Vec::new();
         }
 
-        let closest_bucket_index = self.lookup_bucket_index(item);
+        let closest_bucket_index =
+            if let Some(bi) = self.lookup_bucket_index(self.node_info.id.distance(item)) {
+                bi
+            } else {
+                K_PARAM - 1
+            };
+
         let closest_bucket = self.buckets.index(closest_bucket_index);
 
         let mut closest_nodes: Vec<NodeAndDistance> = Vec::with_capacity(count);
@@ -130,8 +141,15 @@ impl RoutingTable {
         closest_nodes
     }
 
+    // TODO: Change node_info to key
     pub fn remove(&self, node_info: &NodeInfo) {
-        let bucket_index = self.lookup_bucket_index(node_info.id);
+        let bucket_index =
+            if let Some(bi) = self.lookup_bucket_index(self.node_info.id.distance(node_info.id)) {
+                bi
+            } else {
+                return;
+            };
+
         let mut bucket = self.buckets.index(bucket_index).lock().unwrap();
         if let Some(item_index) = bucket.iter().position(|x| x == node_info) {
             bucket.remove(item_index);
@@ -140,8 +158,11 @@ impl RoutingTable {
         }
     }
 
-    fn lookup_bucket_index(&self, item: Key) -> usize {
-        self.node_info.id.distance(item).zeroes_in_prefix()
+    fn lookup_bucket_index(&self, distance: Distance) -> Option<usize> {
+        match distance.zeroes_in_prefix() {
+            bucket if bucket >= N_BUCKETS => None,
+            bucket => Some(bucket),
+        }
     }
 
     pub fn print(&self) {

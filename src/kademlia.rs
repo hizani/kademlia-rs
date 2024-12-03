@@ -37,6 +37,7 @@ pub enum Reply {
 #[derive(Clone)]
 pub struct Kademlia {
     routes: Arc<RoutingTable>,
+    // TODO: store hash of a value as the map key
     store: Arc<Mutex<HashMap<String, String>>>,
     rpc: Arc<Rpc>,
     node_info: NodeInfo,
@@ -100,8 +101,7 @@ impl Kademlia {
         match req {
             Request::Ping => Reply::Ping,
             Request::Store(k, v) => {
-                let mut store = self.store.lock().unwrap();
-                store.insert(k, v);
+                self.store.lock().unwrap().insert(k, v);
 
                 Reply::Ping
             }
@@ -304,7 +304,16 @@ impl Kademlia {
     }
 
     pub fn put(&self, k: &str, v: &str) {
-        let candidates = self.lookup_nodes(Key::hash(k.as_bytes()));
+        let id = Key::hash(k.as_bytes());
+        let candidates = self.lookup_nodes(id);
+
+        if candidates.len() < K_PARAM {
+            self.store
+                .lock()
+                .unwrap()
+                .insert(k.to_owned(), v.to_owned());
+        }
+
         for NodeAndDistance(node_info, _) in candidates {
             let node = self.clone();
             let k = k.to_owned();
@@ -316,6 +325,10 @@ impl Kademlia {
     }
 
     pub fn get(&self, k: &str) -> Option<String> {
+        if let Some(v) = self.store.lock().unwrap().get(k) {
+            return Some(v.to_owned());
+        }
+
         let (v_opt, mut nodes) = self.lookup_value(k);
         v_opt.map(|v| {
             if let Some(NodeAndDistance(store_target, _)) = nodes.pop() {

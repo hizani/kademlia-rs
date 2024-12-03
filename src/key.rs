@@ -23,7 +23,8 @@ impl Key {
         Key(hash.into_bytes())
     }
 
-    /// XORs two Keys
+    // TODO: need to try rewriting to SIMD XOR when the API stabilizes
+    /// XORs two Keys.
     pub fn distance(&self, y: Key) -> Distance {
         let mut res = [0; KEY_LEN];
         for i in 0usize..KEY_LEN {
@@ -93,13 +94,7 @@ impl Distance {
             break;
         }
 
-        // TODO: just return count if distance is 0 and don't save local
-        // node into routing table
-        if zeroes_count == KEY_LEN * 8 {
-            zeroes_count - 1
-        } else {
-            zeroes_count
-        }
+        zeroes_count
     }
 }
 
