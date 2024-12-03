@@ -57,7 +57,7 @@ impl RoutingTable {
     /// Update the appropriate bucket with the new node's info
     pub fn update(&self, node_info: NodeInfo) {
         let bucket_index =
-            if let Some(bi) = self.lookup_bucket_index(self.node_info.id.distance(node_info.id)) {
+            if let Some(bi) = self.lookup_bucket_index(self.node_info.id.distance(&node_info.id)) {
                 bi
             } else {
                 return;
@@ -82,7 +82,7 @@ impl RoutingTable {
     }
 
     /// Lookup the nodes closest to item in this table
-    pub fn closest_nodes(&self, item: Key, count: usize) -> Vec<NodeAndDistance> {
+    pub fn closest_nodes(&self, item: &Key, count: usize) -> Vec<NodeAndDistance> {
         if count == 0 {
             return Vec::new();
         }
@@ -136,22 +136,23 @@ impl RoutingTable {
             }
         }
 
-        closest_nodes.sort_by(|a, b| a.1.cmp(&b.1));
+        closest_nodes.sort_by(|a, b| b.1.cmp(&a.1));
         closest_nodes.truncate(count);
         closest_nodes
     }
 
-    // TODO: Change node_info to key
-    pub fn remove(&self, node_info: &NodeInfo) {
+    pub fn remove(&self, key: &Key) {
+        // TODO: Add fn get_bucket(key: &Key) and use it here to simplify the
+        // code.
         let bucket_index =
-            if let Some(bi) = self.lookup_bucket_index(self.node_info.id.distance(node_info.id)) {
+            if let Some(bi) = self.lookup_bucket_index(self.node_info.id.distance(key)) {
                 bi
             } else {
                 return;
             };
 
         let mut bucket = self.buckets.index(bucket_index).lock().unwrap();
-        if let Some(item_index) = bucket.iter().position(|x| x == node_info) {
+        if let Some(item_index) = bucket.iter().position(|x| &x.id == key) {
             bucket.remove(item_index);
         } else {
             warn!("Tried to remove routing entry that doesn't exist.");

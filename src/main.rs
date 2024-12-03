@@ -1,10 +1,12 @@
 use const_hex::FromHex;
 use kademlia::*;
+use log::error;
 use std::{io, net::SocketAddr, str::FromStr};
 
-const HELP: &str = r"help                            ..print help message
-put <string key> <string value> ..store value at key
-get <string key>                ..lookup value at key
+const HELP: &str = r"
+help               ..print help message
+put <string value> ..store value at key
+get                ..lookup value at key
 ======\/ lower level \/======
 p <ip>:<port> <key>  ..pings the node
 s <ip>:<port> <key>  ..sends store req to node
@@ -15,7 +17,9 @@ lv <string key>      ..performs iterative value lookup
 ";
 
 fn main() {
-    env_logger::init();
+    env_logger::Builder::new()
+        .filter_level(log::LevelFilter::Trace)
+        .init();
 
     let input = io::stdin();
     let mut buffer = String::new();
@@ -61,33 +65,43 @@ fn main() {
             "s" => {
                 dummy_info.addr = SocketAddr::from_str(args[1]).unwrap();
                 dummy_info.id = Key::from_hex(args[2]).unwrap();
-                println!("{:?}", handle.store(dummy_info.clone(), args[3], args[4]));
+                println!(
+                    "{:?}",
+                    handle.store(dummy_info.clone(), &Key::hash(args[3].as_bytes()), args[4])
+                );
             }
             "fn" => {
                 dummy_info.addr = SocketAddr::from_str(args[1]).unwrap();
                 dummy_info.id = Key::from_hex(args[2]).unwrap();
                 println!(
                     "{:?}",
-                    handle.find_node(dummy_info.clone(), Key::from_hex(args[3]).unwrap())
+                    handle.find_node(dummy_info.clone(), &Key::from_hex(args[3]).unwrap())
                 );
             }
             "fv" => {
                 dummy_info.addr = SocketAddr::from_str(args[1]).unwrap();
                 dummy_info.id = Key::from_hex(args[2]).unwrap();
-                println!("{:?}", handle.find_value(dummy_info.clone(), args[3]));
+                println!(
+                    "{:?}",
+                    handle.find_value(dummy_info.clone(), &Key::hash(args[3].as_bytes()))
+                );
             }
             "ln" => {
-                println!("{:?}", handle.lookup_nodes(Key::from_hex(args[1]).unwrap()));
+                println!(
+                    "{:?}",
+                    handle.lookup_nodes(&Key::from_hex(args[1]).unwrap())
+                );
             }
             "lv" => {
-                println!("{:?}", handle.lookup_value(args[1]));
+                println!("{:?}", handle.lookup_value(&Key::hash(args[1].as_bytes())));
             }
             "put" => {
-                println!("{:?}", handle.put(args[1], args[2]));
+                println!("{:?}", handle.put(args[1]));
             }
-            "get" => {
-                println!("{:?}", handle.get(args[1]));
-            }
+            "get" => match Key::from_hex(args[1].as_bytes().to_owned()) {
+                Ok(key) => println!("{:?}", handle.get(&key)),
+                Err(e) => error!("can't get value by key: {}", e),
+            },
             _ => {
                 println!("no match");
             }

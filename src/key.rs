@@ -1,14 +1,14 @@
-use const_hex::FromHex;
+use const_hex::{FromHex, ToHexExt};
 use hashes::sha1;
 use serde::{Deserialize, Serialize};
 use std::{
-    fmt::{Debug, Error, Formatter},
+    fmt::{Debug, Display, Error, Formatter},
     str::FromStr,
 };
 
 use crate::KEY_LEN;
 
-#[derive(Hash, Ord, PartialOrd, Eq, PartialEq, Copy, Clone, Deserialize, Serialize)]
+#[derive(Hash, Ord, PartialOrd, Eq, PartialEq, Clone, Deserialize, Serialize)]
 pub struct Key([u8; KEY_LEN]);
 
 impl Key {
@@ -23,9 +23,9 @@ impl Key {
         Key(hash.into_bytes())
     }
 
-    // TODO: need to try rewriting to SIMD XOR when the API stabilizes
     /// XORs two Keys.
-    pub fn distance(&self, y: Key) -> Distance {
+    pub fn distance(&self, y: &Key) -> Distance {
+        // TODO: need to try rewriting to SIMD XOR when the API stabilizes.
         let mut res = [0; KEY_LEN];
         for i in 0usize..KEY_LEN {
             res[i] = self.0[i] ^ y.0[i];
@@ -40,12 +40,15 @@ impl From<[u8; KEY_LEN]> for Key {
     }
 }
 
+impl Display for Key {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.encode_hex_upper())
+    }
+}
+
 impl Debug for Key {
     fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
-        for x in self.0.iter() {
-            write!(f, "{0:02x}", x)?;
-        }
-        Ok(())
+        write!(f, "{}", self.encode_hex_with_prefix())
     }
 }
 

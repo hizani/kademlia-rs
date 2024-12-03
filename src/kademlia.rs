@@ -1,6 +1,6 @@
 use log::info;
 use serde::{Deserialize, Serialize};
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
@@ -16,9 +16,9 @@ use crate::{
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Request {
     Ping,
-    Store(String, String),
+    Store(Key, String),
     FindNode(Key),
-    FindValue(String),
+    FindValue(Key),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -37,8 +37,7 @@ pub enum Reply {
 #[derive(Clone)]
 pub struct Kademlia {
     routes: Arc<RoutingTable>,
-    // TODO: store hash of a value as the map key
-    store: Arc<Mutex<HashMap<String, String>>>,
+    store: Arc<Mutex<HashMap<Key, String>>>,
     rpc: Arc<Rpc>,
     node_info: NodeInfo,
 }
@@ -53,7 +52,7 @@ impl Kademlia {
     ) -> Kademlia {
         let socket = UdpSocket::bind(node_addr).unwrap(); // err: failed to bind to socket
         let node_info = NodeInfo {
-            id: node_id.clone(),
+            id: node_id,
             addr: socket.local_addr().unwrap(), // err: failed to retrieve local addr
             net_id: net_id,
         };
@@ -62,7 +61,7 @@ impl Kademlia {
             routes.update(bootstrap);
         }
         info!(
-            "New node created at {} with ID {:?}",
+            "New node created at {} with ID {}",
             &node_info.addr, &node_info.id
         );
 
@@ -77,7 +76,7 @@ impl Kademlia {
         };
 
         node.clone().start_req_handler(rx);
-        node.lookup_nodes(node_id);
+        node.lookup_nodes(&node.node_info.id);
 
         node
     }
@@ -105,18 +104,16 @@ impl Kademlia {
 
                 Reply::Ping
             }
-            Request::FindNode(id) => Reply::FindNode(self.routes.closest_nodes(id, K_PARAM)),
-            Request::FindValue(k) => {
-                let hash = Key::hash(k.as_bytes());
-
+            Request::FindNode(id) => Reply::FindNode(self.routes.closest_nodes(&id, K_PARAM)),
+            Request::FindValue(id) => {
                 let mut store = self.store.lock().unwrap();
-                let lookup_res = store.remove(&k);
+                let lookup_res = store.remove(&id);
                 drop(store);
 
                 match lookup_res {
                     Some(v) => Reply::FindValue(FindValueResult::Value(v)),
                     None => Reply::FindValue(FindValueResult::Nodes(
-                        self.routes.closest_nodes(hash, K_PARAM),
+                        self.routes.closest_nodes(&id, K_PARAM),
                     )),
                 }
             }
@@ -127,17 +124,17 @@ impl Kademlia {
         self.rpc.send_req(Request::Ping, dst)
     }
 
-    pub fn store_raw(&self, dst: NodeInfo, k: &str, v: &str) -> Receiver<Option<Reply>> {
+    pub fn store_raw(&self, dst: NodeInfo, k: &Key, v: &str) -> Receiver<Option<Reply>> {
         self.rpc
             .send_req(Request::Store(k.to_owned(), v.to_owned()), dst)
     }
 
-    pub fn find_node_raw(&self, dst: NodeInfo, id: Key) -> Receiver<Option<Reply>> {
-        self.rpc.send_req(Request::FindNode(id), dst)
+    pub fn find_node_raw(&self, dst: NodeInfo, k: &Key) -> Receiver<Option<Reply>> {
+        self.rpc.send_req(Request::FindNode(k.to_owned()), dst)
     }
 
-    pub fn find_value_raw(&self, dst: NodeInfo, k: String) -> Receiver<Option<Reply>> {
-        self.rpc.send_req(Request::FindValue(k), dst)
+    pub fn find_value_raw(&self, dst: NodeInfo, k: &Key) -> Receiver<Option<Reply>> {
+        self.rpc.send_req(Request::FindValue(k.clone()), dst)
     }
 
     pub fn ping(&self, dst: NodeInfo) -> Option<()> {
@@ -146,53 +143,50 @@ impl Kademlia {
             self.routes.update(dst);
             Some(())
         } else {
-            self.routes.remove(&dst);
+            self.routes.remove(&dst.id);
             None
         }
     }
 
-    pub fn store(&self, dst: NodeInfo, k: &str, v: &str) -> Option<()> {
-        let rep = self.store_raw(dst.clone(), k, v).recv().unwrap(); // err: pending reply channel closed
+    pub fn store(&self, dst: NodeInfo, k: &Key, v: &str) -> Option<()> {
+        let rep = self.store_raw(dst.clone(), &k, &v).recv().unwrap(); // err: pending reply channel closed
         if let Some(Reply::Ping) = rep {
             self.routes.update(dst);
             Some(())
         } else {
-            self.routes.remove(&dst);
+            self.routes.remove(&dst.id);
             None
         }
     }
 
-    pub fn find_node(&self, dst: NodeInfo, id: Key) -> Option<Vec<NodeAndDistance>> {
+    pub fn find_node(&self, dst: NodeInfo, id: &Key) -> Option<Vec<NodeAndDistance>> {
         let rep = self.find_node_raw(dst.clone(), id).recv().unwrap(); // err: pending reply channel closed
         if let Some(Reply::FindNode(entries)) = rep {
             self.routes.update(dst);
             Some(entries)
         } else {
-            self.routes.remove(&dst);
+            self.routes.remove(&dst.id);
             None
         }
     }
 
-    pub fn find_value(&self, dst: NodeInfo, k: &str) -> Option<FindValueResult> {
-        let rep = self
-            .find_value_raw(dst.clone(), k.to_owned())
-            .recv()
-            .unwrap(); // err: pending reply channel closed
+    pub fn find_value(&self, dst: NodeInfo, k: &Key) -> Option<FindValueResult> {
+        let rep = self.find_value_raw(dst.clone(), k).recv().unwrap(); // err: pending reply channel closed
         if let Some(Reply::FindValue(res)) = rep {
             self.routes.update(dst);
             Some(res)
         } else {
-            self.routes.remove(&dst);
+            self.routes.remove(&dst.id);
             None
         }
     }
 
-    pub fn lookup_nodes(&self, id: Key) -> Vec<NodeAndDistance> {
+    pub fn lookup_nodes(&self, id: &Key) -> Vec<NodeAndDistance> {
         let mut queried = HashSet::new();
         let mut nodes_distances = HashSet::new();
 
         // Add the closest nodes we know to our queue of nodes to query
-        let mut to_query = BinaryHeap::from(self.routes.closest_nodes(id, K_PARAM));
+        let mut to_query = self.routes.closest_nodes(id, K_PARAM);
 
         for entry in &to_query {
             queried.insert(entry.clone());
@@ -215,7 +209,8 @@ impl Kademlia {
             for &NodeAndDistance(ref node_info, _) in &queries {
                 let ni = node_info.clone();
                 let node = self.clone();
-                joins.push(thread::spawn(move || node.find_node(ni.clone(), id)));
+                let id = id.clone();
+                joins.push(thread::spawn(move || node.find_node(ni.clone(), &id)));
             }
             for j in joins {
                 results.push(j.join().unwrap());
@@ -238,13 +233,12 @@ impl Kademlia {
         nodes_distances
     }
 
-    pub fn lookup_value(&self, k: &str) -> (Option<String>, Vec<NodeAndDistance>) {
-        let id = Key::hash(k.as_bytes());
+    pub fn lookup_value(&self, k: &Key) -> (Option<String>, Vec<NodeAndDistance>) {
         let mut queried = HashSet::new();
         let mut nodes_distances = HashSet::new();
 
         // Add the closest nodes we know to our queue of nodes to query
-        let mut to_query = BinaryHeap::from(self.routes.closest_nodes(id, K_PARAM));
+        let mut to_query = self.routes.closest_nodes(k, K_PARAM);
 
         for entry in &to_query {
             queried.insert(entry.clone());
@@ -303,9 +297,10 @@ impl Kademlia {
         (None, nodes_distances)
     }
 
-    pub fn put(&self, k: &str, v: &str) {
-        let id = Key::hash(k.as_bytes());
-        let candidates = self.lookup_nodes(id);
+    pub fn put(&self, v: &str) {
+        let k = Key::hash(v.as_bytes());
+        info!("key: {}", k);
+        let candidates = self.lookup_nodes(&k);
 
         if candidates.len() < K_PARAM {
             self.store
@@ -324,15 +319,15 @@ impl Kademlia {
         }
     }
 
-    pub fn get(&self, k: &str) -> Option<String> {
-        if let Some(v) = self.store.lock().unwrap().get(k) {
+    pub fn get(&self, k: &Key) -> Option<String> {
+        if let Some(v) = self.store.lock().unwrap().get(&k) {
             return Some(v.to_owned());
         }
 
         let (v_opt, mut nodes) = self.lookup_value(k);
         v_opt.map(|v| {
             if let Some(NodeAndDistance(store_target, _)) = nodes.pop() {
-                self.store(store_target, k, &v);
+                self.store(store_target, &k, &v);
             } else {
                 self.store(self.node_info.clone(), k, &v);
             }

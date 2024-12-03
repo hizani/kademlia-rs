@@ -147,11 +147,11 @@ impl Rpc {
         while pending.contains_key(&token) {
             token = Key::new();
         }
-        pending.insert(token, tx.clone());
+        pending.insert(token.to_owned(), tx.clone());
         drop(pending);
 
         let rmsg = RpcMessage {
-            token: token,
+            token: token.to_owned(),
             src: self.node_info.clone(),
             dst: dst,
             msg: Message::Request(req),
