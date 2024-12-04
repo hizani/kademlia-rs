@@ -81,10 +81,6 @@ impl Rpc {
 
                 debug!("|  IN | {:?} <== {:?} ", rmsg.msg, rmsg.src.id);
 
-                if rmsg.src.net_id != rpc.node_info.net_id {
-                    warn!("Message from different net_id received, ignoring.");
-                    continue;
-                }
                 if rmsg.dst.id != rpc.node_info.id {
                     warn!("Message received, but dst id does not match this node, ignoring.");
                     continue;

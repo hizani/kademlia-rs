@@ -11,7 +11,6 @@ use crate::{
 pub struct NodeInfo {
     pub id: Key,
     pub addr: SocketAddr,
-    pub net_id: String,
 }
 
 // TODO: make Kbucket a real struct to store maximum number of elements.

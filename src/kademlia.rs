@@ -44,17 +44,11 @@ pub struct Kademlia {
 
 /// A Kademlia node
 impl Kademlia {
-    pub fn start(
-        net_id: String,
-        node_id: Key,
-        node_addr: SocketAddr,
-        bootstrap: Option<NodeInfo>,
-    ) -> Kademlia {
+    pub fn start(node_id: Key, node_addr: SocketAddr, bootstrap: Option<NodeInfo>) -> Kademlia {
         let socket = UdpSocket::bind(node_addr).unwrap(); // err: failed to bind to socket
         let node_info = NodeInfo {
             id: node_id,
             addr: socket.local_addr().unwrap(), // err: failed to retrieve local addr
-            net_id: net_id,
         };
         let routes = RoutingTable::new(node_info.clone());
         if let Some(bootstrap) = bootstrap {
