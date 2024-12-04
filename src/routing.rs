@@ -1,6 +1,6 @@
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, net::SocketAddr, ops::Index, sync::Mutex};
+use std::{cmp::Ordering, net::SocketAddr, sync::Mutex};
 
 use crate::{
     key::{Distance, Key},
@@ -14,10 +14,13 @@ pub struct NodeInfo {
     pub net_id: String,
 }
 
+// TODO: make Kbucket a real struct to store maximum number of elements.
+type Kbucket = Mutex<Vec<NodeInfo>>;
+
 #[derive(Debug)]
 pub struct RoutingTable {
     node_info: NodeInfo,
-    buckets: Vec<Mutex<Vec<NodeInfo>>>,
+    buckets: Vec<Kbucket>,
 }
 
 #[derive(Eq, Hash, Clone, Debug, Serialize, Deserialize)]
@@ -56,26 +59,22 @@ impl RoutingTable {
 
     /// Update the appropriate bucket with the new node's info
     pub fn update(&self, node_info: NodeInfo) {
-        let bucket_index =
-            if let Some(bi) = self.lookup_bucket_index(self.node_info.id.distance(&node_info.id)) {
-                bi
-            } else {
-                return;
-            };
+        if let Some((bucket, _)) = self.get_bucket_by_key(&node_info.id) {
+            let mut bucket = bucket.lock().unwrap();
 
-        let mut bucket = self.buckets[bucket_index].lock().unwrap();
-        let node_index = bucket.iter().position(|x| x.id == node_info.id);
-        match node_index {
-            Some(i) => {
-                let temp = bucket.remove(i);
-                bucket.push(temp);
-            }
-            None => {
-                if bucket.len() < K_PARAM {
-                    bucket.push(node_info);
-                } else {
-                    // TODO: go through bucket, pinging nodes, replace one
-                    // that doesn't respond.
+            let node_index = bucket.iter().position(|x| x.id == node_info.id);
+            match node_index {
+                Some(i) => {
+                    let temp = bucket.remove(i);
+                    bucket.push(temp);
+                }
+                None => {
+                    if bucket.len() < K_PARAM {
+                        bucket.push(node_info);
+                    } else {
+                        // TODO: go through bucket, pinging nodes, replace one
+                        // that doesn't respond.
+                    }
                 }
             }
         }
@@ -87,14 +86,12 @@ impl RoutingTable {
             return Vec::new();
         }
 
-        let closest_bucket_index =
-            if let Some(bi) = self.lookup_bucket_index(self.node_info.id.distance(item)) {
-                bi
+        let (closest_bucket, closest_bucket_index) =
+            if let Some((bucket, index)) = self.get_bucket_by_key(item) {
+                (bucket, index)
             } else {
-                K_PARAM - 1
+                (self.buckets.last().unwrap(), N_BUCKETS - 1)
             };
-
-        let closest_bucket = self.buckets.index(closest_bucket_index);
 
         let mut closest_nodes: Vec<NodeAndDistance> = Vec::with_capacity(count);
         closest_nodes.extend(
@@ -142,31 +139,30 @@ impl RoutingTable {
     }
 
     pub fn remove(&self, key: &Key) {
-        // TODO: Add fn get_bucket(key: &Key) and use it here to simplify the
-        // code.
-        let bucket_index =
-            if let Some(bi) = self.lookup_bucket_index(self.node_info.id.distance(key)) {
-                bi
+        if let Some((bucket, _)) = self.get_bucket_by_key(key) {
+            let mut bucket = bucket.lock().unwrap();
+
+            if let Some(item_index) = bucket.iter().position(|x| &x.id == key) {
+                bucket.remove(item_index);
             } else {
-                return;
-            };
-
-        let mut bucket = self.buckets.index(bucket_index).lock().unwrap();
-        if let Some(item_index) = bucket.iter().position(|x| &x.id == key) {
-            bucket.remove(item_index);
-        } else {
-            warn!("Tried to remove routing entry that doesn't exist.");
+                warn!("Tried to remove routing entry that doesn't exist.");
+            }
         }
     }
 
-    fn lookup_bucket_index(&self, distance: Distance) -> Option<usize> {
-        match distance.zeroes_in_prefix() {
-            bucket if bucket >= N_BUCKETS => None,
-            bucket => Some(bucket),
-        }
+    #[inline]
+    fn get_bucket_by_key<'a>(&'a self, key: &Key) -> Option<(&'a Kbucket, usize)> {
+        let index = self.lookup_bucket_index(self.node_info.id.distance(key));
+        self.buckets.get(index).zip(Some(index))
     }
 
+    #[inline]
     pub fn print(&self) {
         info!("{:?}", self.buckets);
+    }
+
+    #[inline]
+    fn lookup_bucket_index(&self, distance: Distance) -> usize {
+        distance.zeroes_in_prefix()
     }
 }
