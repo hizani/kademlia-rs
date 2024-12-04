@@ -6,6 +6,9 @@ use std::{
     str::FromStr,
 };
 
+#[cfg(feature = "simd-unstable")]
+use std::simd;
+
 use crate::KEY_LEN;
 
 #[derive(Hash, Ord, PartialOrd, Eq, PartialEq, Clone, Deserialize, Serialize)]
@@ -24,13 +27,36 @@ impl Key {
     }
 
     /// XORs two Keys.
+    #[cfg(not(feature = "simd-unstable"))]
     pub fn distance(&self, y: &Key) -> Distance {
-        // TODO: need to try rewriting to SIMD XOR when the API stabilizes.
-        let mut res = [0; KEY_LEN];
+        let mut result = [0; KEY_LEN];
         for i in 0usize..KEY_LEN {
-            res[i] = self.0[i] ^ y.0[i];
+            result[i] = self.0[i] ^ y.0[i];
         }
-        Distance(res)
+
+        Distance(result)
+    }
+
+    // Not sure if it is going to be faster than stable implementation
+    #[cfg(feature = "simd-unstable")]
+    pub fn distance(&self, y: &Key) -> Distance {
+        let mut result: Vec<u8> = Vec::with_capacity(KEY_LEN);
+
+        result.extend(
+            self.0
+                .chunks(4)
+                .zip(y.0.chunks(4))
+                .map(|(yours, other)| {
+                    let simd1 = simd::Simd::<u8, 4>::from_slice(yours);
+                    let simd2 = simd::Simd::<u8, 4>::from_slice(other);
+
+                    let result = simd1 ^ simd2;
+                    result.to_array().into_iter()
+                })
+                .flatten(),
+        );
+
+        unsafe { Distance(result.try_into().unwrap_unchecked()) }
     }
 }
 
@@ -79,6 +105,7 @@ impl FromHex for Key {
 pub struct Distance([u8; KEY_LEN]);
 
 impl Distance {
+    #[cfg(target_endian = "big")]
     pub fn zeroes_in_prefix(&self) -> usize {
         let mut zeroes_count = 0;
 
@@ -88,11 +115,25 @@ impl Distance {
                 continue;
             }
 
-            if cfg!(target_endian = "big") {
-                zeroes_count += n.trailing_zeros() as usize;
-            } else {
-                zeroes_count += n.leading_zeros() as usize;
+            zeroes_count += n.trailing_zeros() as usize;
+
+            break;
+        }
+
+        zeroes_count
+    }
+
+    #[cfg(target_endian = "little")]
+    pub fn zeroes_in_prefix(&self) -> usize {
+        let mut zeroes_count = 0;
+
+        for n in self.0 {
+            if n == 0 {
+                zeroes_count += 8;
+                continue;
             }
+
+            zeroes_count += n.leading_zeros() as usize;
 
             break;
         }

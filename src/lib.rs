@@ -1,3 +1,5 @@
+#![cfg_attr(feature = "simd-unstable", feature(portable_simd))]
+
 mod kademlia;
 mod key;
 mod routing;
