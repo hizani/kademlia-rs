@@ -1,7 +1,10 @@
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::net::{SocketAddr, UdpSocket};
+use std::io::Read;
+use std::marker::PhantomData;
+use std::mem::MaybeUninit;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -34,39 +37,116 @@ pub enum Reply {
     FindValue(FindValueResult),
 }
 
+#[derive(Default)]
+pub struct KademliaBuilder {
+    bootstrap_nodes: Option<Vec<NodeInfo>>,
+    address: Option<IpAddr>,
+    port: u16,
+    key: Option<Key>,
+}
+
+impl KademliaBuilder {
+    pub fn new() -> Self {
+        KademliaBuilder::default()
+    }
+
+    pub fn key<'a>(&'a mut self, key: Key) -> &'a mut Self {
+        self.key = Some(key);
+        self
+    }
+
+    pub fn address<'a>(&'a mut self, address: IpAddr) -> &'a mut Self {
+        self.address = Some(address);
+        self
+    }
+
+    pub fn port<'a>(&'a mut self, port: u16) -> &'a mut Self {
+        self.port = port;
+        self
+    }
+
+    pub fn bootstrap<'a>(&'a mut self, nodes: Vec<NodeInfo>) -> &'a mut Self {
+        self.bootstrap_nodes = Some(nodes);
+        self
+    }
+
+    pub fn read_bootstrap_nodes<'a>(&'a mut self, _: impl Read) -> &'a mut Self {
+        todo!("bootstrap from file")
+    }
+
+    pub fn build(&self) -> Kademlia<Init> {
+        let address = if let Some(address) = self.address {
+            address
+        } else {
+            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))
+        };
+
+        let key = if let Some(key) = self.key.clone() {
+            key
+        } else {
+            Key::new()
+        };
+
+        let node_info = NodeInfo {
+            addr: SocketAddr::new(address, self.port),
+            id: key,
+        };
+
+        let routes = RoutingTable::new(node_info.clone());
+        if let Some(bootstrap_nodes) = &self.bootstrap_nodes {
+            for node in bootstrap_nodes {
+                routes.update(node.clone());
+            }
+        }
+
+        #[allow(invalid_value)]
+        Kademlia {
+            node_info,
+            routes: Arc::new(routes),
+            store: Arc::new(Mutex::new(HashMap::new())),
+            rpc: unsafe { MaybeUninit::uninit().assume_init() },
+            node_state: PhantomData::<Init>,
+        }
+    }
+}
+
+pub struct Init;
+
 #[derive(Clone)]
-pub struct Kademlia {
+pub struct Running;
+
+#[derive(Clone)]
+pub struct Kademlia<State = Init> {
     routes: Arc<RoutingTable>,
     store: Arc<Mutex<HashMap<Key, String>>>,
     rpc: Arc<Rpc>,
     node_info: NodeInfo,
+    node_state: PhantomData<State>,
 }
 
-/// A Kademlia node
-impl Kademlia {
-    pub fn start(node_id: Key, node_addr: SocketAddr, bootstrap: Option<NodeInfo>) -> Kademlia {
-        let socket = UdpSocket::bind(node_addr).unwrap(); // err: failed to bind to socket
-        let node_info = NodeInfo {
-            id: node_id,
-            addr: socket.local_addr().unwrap(), // err: failed to retrieve local addr
-        };
-        let routes = RoutingTable::new(node_info.clone());
-        if let Some(bootstrap) = bootstrap {
-            routes.update(bootstrap);
-        }
-        info!(
-            "New node created at {} with ID {}",
-            &node_info.addr, &node_info.id
-        );
+impl Default for Kademlia<Init> {
+    fn default() -> Self {
+        KademliaBuilder::new().build()
+    }
+}
+
+impl Kademlia<Init> {
+    pub fn new() -> KademliaBuilder {
+        KademliaBuilder::new()
+    }
+
+    pub fn start(self) -> Kademlia<Running> {
+        let socket = UdpSocket::bind(&self.node_info.addr).unwrap();
 
         let (tx, rx) = mpsc::channel();
-        let rpc = Rpc::open(socket, tx, node_info.clone());
+        let rpc = Rpc::open(socket, tx, self.node_info.clone());
 
         let node = Kademlia {
-            routes: Arc::new(routes),
-            node_info,
-            store: Arc::new(Mutex::new(HashMap::new())),
+            routes: self.routes,
+            node_info: self.node_info,
+            store: self.store,
             rpc: Arc::new(rpc),
+            node_state: PhantomData::<Running>,
         };
 
         node.clone().start_req_handler(rx);
@@ -74,7 +154,9 @@ impl Kademlia {
 
         node
     }
+}
 
+impl Kademlia<Running> {
     fn start_req_handler(self, rx: Receiver<ReqHandle>) {
         thread::spawn(move || {
             for req_handle in rx.iter() {
@@ -328,7 +410,9 @@ impl Kademlia {
             v
         })
     }
+}
 
+impl<AnyState> Kademlia<AnyState> {
     pub fn print_routes(&self) {
         self.routes.print();
     }

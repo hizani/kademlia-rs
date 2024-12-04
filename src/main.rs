@@ -25,19 +25,18 @@ fn main() {
     let mut buffer = String::new();
     input.read_line(&mut buffer).unwrap();
     let params = buffer.trim_end().split(' ').collect::<Vec<_>>();
-    let bootstrap = if params.len() < 2 {
-        None
-    } else {
-        Some(NodeInfo {
+
+    let mut handle = Kademlia::new();
+    if params.len() >= 2 {
+        let nodes = vec![NodeInfo {
             id: Key::from_hex(params[1]).unwrap(),
             addr: SocketAddr::from_str(params[0]).unwrap(),
-        })
-    };
-    let handle = Kademlia::start(
-        Key::new(),
-        SocketAddr::from_str("127.0.0.1:0").unwrap(),
-        bootstrap,
-    );
+        }];
+
+        handle.bootstrap(nodes);
+    }
+
+    let handle = handle.address("127.0.0.1".parse().unwrap()).build().start();
 
     let mut dummy_info = NodeInfo {
         addr: SocketAddr::from_str("127.0.0.1:0").unwrap(),
