@@ -1,5 +1,5 @@
 use const_hex::{FromHex, ToHexExt};
-use hashes::sha1;
+use hashes::sha2::sha256;
 use serde::{Deserialize, Serialize};
 use std::{
     fmt::{Debug, Display, Error, Formatter},
@@ -22,7 +22,7 @@ impl Key {
 
     /// Returns the hashed Key of data.
     pub fn hash(data: &[u8]) -> Key {
-        let hash = sha1::hash(data);
+        let hash = sha256::hash(data);
         Key(hash.into_bytes())
     }
 

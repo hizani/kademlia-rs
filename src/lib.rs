@@ -10,7 +10,7 @@ pub use key::Key;
 pub use routing::NodeInfo;
 
 /// Length of key in bytes
-const KEY_LEN: usize = 20;
+const KEY_LEN: usize = 32;
 /// Number of buckets
 const N_BUCKETS: usize = KEY_LEN * 8;
 /// Entries per bucket
