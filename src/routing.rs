@@ -13,8 +13,11 @@ pub struct NodeInfo {
     pub addr: SocketAddr,
 }
 
-// TODO: make Kbucket a real struct to store maximum number of elements.
-type Kbucket = Mutex<Vec<NodeInfo>>;
+#[derive(Debug)]
+struct Kbucket {
+    nodes: Mutex<Vec<NodeInfo>>,
+    max_size: usize,
+}
 
 #[derive(Debug)]
 pub struct RoutingTable {
@@ -46,8 +49,12 @@ impl Ord for NodeAndDistance {
 impl RoutingTable {
     pub fn new(node_info: NodeInfo) -> RoutingTable {
         let mut buckets = Vec::with_capacity(N_BUCKETS);
-        for i in (1..=N_BUCKETS).rev() {
-            buckets.push(Mutex::new(Vec::with_capacity(i.min(K_PARAM))));
+        for bucket_n in (1..=N_BUCKETS).rev() {
+            let max_size = bucket_n.min(K_PARAM);
+            buckets.push(Kbucket {
+                nodes: Mutex::new(Vec::with_capacity(max_size)),
+                max_size,
+            });
         }
         let routing_rable = RoutingTable {
             buckets,
@@ -59,17 +66,17 @@ impl RoutingTable {
     /// Update the appropriate bucket with the new node's info
     pub fn update(&self, node_info: NodeInfo) {
         if let Some((bucket, _)) = self.get_bucket_by_key(&node_info.id) {
-            let mut bucket = bucket.lock().unwrap();
+            let mut nodes = bucket.nodes.lock().unwrap();
 
-            let node_index = bucket.iter().position(|x| x.id == node_info.id);
+            let node_index = nodes.iter().position(|x| x.id == node_info.id);
             match node_index {
                 Some(i) => {
-                    let temp = bucket.remove(i);
-                    bucket.push(temp);
+                    let temp = nodes.remove(i);
+                    nodes.push(temp);
                 }
                 None => {
-                    if bucket.len() < K_PARAM {
-                        bucket.push(node_info);
+                    if nodes.len() < bucket.max_size {
+                        nodes.push(node_info);
                     } else {
                         // TODO: go through bucket, pinging nodes, replace one
                         // that doesn't respond.
@@ -95,6 +102,7 @@ impl RoutingTable {
         let mut closest_nodes: Vec<NodeAndDistance> = Vec::with_capacity(count);
         closest_nodes.extend(
             closest_bucket
+                .nodes
                 .lock()
                 .unwrap()
                 .iter()
@@ -120,13 +128,13 @@ impl RoutingTable {
             }
 
             if let Some(left_bucket) = check_buckets.0 {
-                closest_nodes.extend(left_bucket.lock().unwrap().iter().map(|node_info| {
+                closest_nodes.extend(left_bucket.nodes.lock().unwrap().iter().map(|node_info| {
                     NodeAndDistance(node_info.clone(), node_info.id.distance(item))
                 }));
             }
 
             if let Some(right_bucket) = check_buckets.1 {
-                closest_nodes.extend(right_bucket.lock().unwrap().iter().map(|node_info| {
+                closest_nodes.extend(right_bucket.nodes.lock().unwrap().iter().map(|node_info| {
                     NodeAndDistance(node_info.clone(), node_info.id.distance(item))
                 }));
             }
@@ -139,10 +147,10 @@ impl RoutingTable {
 
     pub fn remove(&self, key: &Key) {
         if let Some((bucket, _)) = self.get_bucket_by_key(key) {
-            let mut bucket = bucket.lock().unwrap();
+            let mut nodes = bucket.nodes.lock().unwrap();
 
-            if let Some(item_index) = bucket.iter().position(|x| &x.id == key) {
-                bucket.remove(item_index);
+            if let Some(item_index) = nodes.iter().position(|x| &x.id == key) {
+                nodes.remove(item_index);
             } else {
                 warn!("Tried to remove routing entry that doesn't exist.");
             }
