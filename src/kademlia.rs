@@ -1,3 +1,4 @@
+use log::error;
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -95,7 +96,9 @@ impl KademliaBuilder {
         let routes = RoutingTable::new(node_info.clone());
         if let Some(bootstrap_nodes) = &self.bootstrap_nodes {
             for node in bootstrap_nodes {
-                routes.update(node.clone());
+                if let Err(err) = routes.update(node.clone()) {
+                    error!("bootstrap: can't insert node {}: {}", node_info.id, err)
+                }
             }
         }
 
@@ -172,7 +175,7 @@ impl Kademlia<Running> {
     }
 
     fn handle_req(&self, req: Request, src: NodeInfo) -> Reply {
-        self.routes.update(src);
+        self.update_table(src);
         match req {
             Request::Ping => Reply::Ping,
             Request::Store(k, v) => {
@@ -216,7 +219,20 @@ impl Kademlia<Running> {
     pub fn ping(&self, dst: NodeInfo) -> Option<()> {
         let rep = self.ping_raw(dst.clone()).recv().unwrap(); // err: pending reply channel closed
         if let Some(Reply::Ping) = rep {
-            self.routes.update(dst);
+            self.update_table(dst);
+            Some(())
+        } else {
+            self.routes.remove(&dst.id);
+            None
+        }
+    }
+
+    /// Pings dst without trying to clean K-Bucket if there is no room for
+    /// dst insertion
+    pub fn ping_discard(&self, dst: NodeInfo) -> Option<()> {
+        let rep = self.ping_raw(dst.clone()).recv().unwrap(); // err: pending reply channel closed
+        if let Some(Reply::Ping) = rep {
+            _ = self.routes.update(dst);
             Some(())
         } else {
             self.routes.remove(&dst.id);
@@ -227,7 +243,7 @@ impl Kademlia<Running> {
     pub fn store(&self, dst: NodeInfo, k: &Key, v: &str) -> Option<()> {
         let rep = self.store_raw(dst.clone(), &k, &v).recv().unwrap(); // err: pending reply channel closed
         if let Some(Reply::Ping) = rep {
-            self.routes.update(dst);
+            self.update_table(dst);
             Some(())
         } else {
             self.routes.remove(&dst.id);
@@ -238,7 +254,7 @@ impl Kademlia<Running> {
     pub fn find_node(&self, dst: NodeInfo, id: &Key) -> Option<Vec<NodeAndDistance>> {
         let rep = self.find_node_raw(dst.clone(), id).recv().unwrap(); // err: pending reply channel closed
         if let Some(Reply::FindNode(entries)) = rep {
-            self.routes.update(dst);
+            self.update_table(dst);
             Some(entries)
         } else {
             self.routes.remove(&dst.id);
@@ -249,7 +265,7 @@ impl Kademlia<Running> {
     pub fn find_value(&self, dst: NodeInfo, k: &Key) -> Option<FindValueResult> {
         let rep = self.find_value_raw(dst.clone(), k).recv().unwrap(); // err: pending reply channel closed
         if let Some(Reply::FindValue(res)) = rep {
-            self.routes.update(dst);
+            self.update_table(dst);
             Some(res)
         } else {
             self.routes.remove(&dst.id);
@@ -409,6 +425,19 @@ impl Kademlia<Running> {
             }
             v
         })
+    }
+
+    fn update_table(&self, dst: NodeInfo) {
+        if let Err(err) = self.routes.update(dst) {
+            for node in err.nodes {
+                if let None = self.ping_discard(node) {
+                    break;
+                }
+            }
+
+            // discard dst if there is still no room after pinging whole K-Bucket
+            _ = self.routes.update(err.node_info);
+        }
     }
 }
 

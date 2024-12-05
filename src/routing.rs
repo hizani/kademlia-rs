@@ -7,7 +7,15 @@ use crate::{
     K_PARAM, N_BUCKETS,
 };
 
-#[derive(Hash, Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, thiserror::Error)]
+#[error("kbucket {} is full", bucket_n)]
+pub struct ErrBucketIsFull {
+    pub nodes: Vec<NodeInfo>,
+    pub bucket_n: usize,
+    pub node_info: NodeInfo,
+}
+
+#[derive(Hash, Eq, PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct NodeInfo {
     pub id: Key,
     pub addr: SocketAddr,
@@ -64,8 +72,8 @@ impl RoutingTable {
     }
 
     /// Update the appropriate bucket with the new node's info
-    pub fn update(&self, node_info: NodeInfo) {
-        if let Some((bucket, _)) = self.get_bucket_by_key(&node_info.id) {
+    pub fn update(&self, node_info: NodeInfo) -> Result<(), ErrBucketIsFull> {
+        if let Some((bucket, bucket_n)) = self.get_bucket_by_key(&node_info.id) {
             let mut nodes = bucket.nodes.lock().unwrap();
 
             let node_index = nodes.iter().position(|x| x.id == node_info.id);
@@ -78,12 +86,17 @@ impl RoutingTable {
                     if nodes.len() < bucket.max_size {
                         nodes.push(node_info);
                     } else {
-                        // TODO: go through bucket, pinging nodes, replace one
-                        // that doesn't respond.
+                        return Err(ErrBucketIsFull {
+                            bucket_n,
+                            node_info,
+                            nodes: nodes.clone(),
+                        });
                     }
                 }
             }
         }
+
+        Ok(())
     }
 
     /// Lookup the nodes closest to item in this table

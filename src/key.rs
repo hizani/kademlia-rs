@@ -11,7 +11,7 @@ use std::simd;
 
 use crate::KEY_LEN;
 
-#[derive(Hash, Ord, PartialOrd, Eq, PartialEq, Clone, Deserialize, Serialize)]
+#[derive(Hash, Ord, PartialOrd, Eq, PartialEq, Clone, Copy, Deserialize, Serialize)]
 pub struct Key([u8; KEY_LEN]);
 
 impl Key {
