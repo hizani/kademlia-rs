@@ -37,26 +37,15 @@ impl Key {
         Distance(result)
     }
 
-    // Not sure if it is going to be faster than stable implementation
+    /// XORs two Keys.
     #[cfg(feature = "simd-unstable")]
     pub fn distance(&self, y: &Key) -> Distance {
-        let mut result: Vec<u8> = Vec::with_capacity(KEY_LEN);
+        let simd1 = simd::Simd::<u8, 32>::from_array(self.0);
+        let simd2 = simd::Simd::<u8, 32>::from_array(y.0);
 
-        result.extend(
-            self.0
-                .chunks(4)
-                .zip(y.0.chunks(4))
-                .map(|(yours, other)| {
-                    let simd1 = simd::Simd::<u8, 4>::from_slice(yours);
-                    let simd2 = simd::Simd::<u8, 4>::from_slice(other);
+        let result = simd1 ^ simd2;
 
-                    let result = simd1 ^ simd2;
-                    result.to_array().into_iter()
-                })
-                .flatten(),
-        );
-
-        unsafe { Distance(result.try_into().unwrap_unchecked()) }
+        Distance(result.to_array())
     }
 }
 
