@@ -36,7 +36,7 @@ fn main() {
         handle.bootstrap(nodes);
     }
 
-    let handle = handle.address("127.0.0.1".parse().unwrap()).build().start();
+    let handle = handle.address("127.0.0.1".parse().unwrap()).start();
 
     let mut dummy_info = NodeInfo {
         addr: SocketAddr::from_str("127.0.0.1:0").unwrap(),

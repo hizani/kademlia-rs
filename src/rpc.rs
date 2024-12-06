@@ -1,8 +1,6 @@
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::marker::PhantomData;
-use std::mem::MaybeUninit;
 use std::net::{SocketAddr, UdpSocket};
 use std::str;
 use std::sync::mpsc;
@@ -36,7 +34,7 @@ pub struct ReqHandle {
     token: Key,
     src: NodeInfo,
     req: Request,
-    rpc: Rpc<Running>,
+    rpc: Rpc,
 }
 
 impl ReqHandle {
@@ -49,7 +47,7 @@ impl ReqHandle {
     pub fn rep(self, rep: Reply) {
         let rep_rmsg = RpcMessage {
             token: self.token,
-            src: unsafe { self.rpc.node_info.assume_init().clone() },
+            src: self.rpc.node_info,
             dst: self.src.clone(),
             msg: Message::Reply(rep),
         };
@@ -58,107 +56,33 @@ impl ReqHandle {
 }
 
 #[derive(Clone)]
-pub struct Uninit;
-#[derive(Clone)]
-pub struct Running;
-
-#[derive(Clone)]
-pub(crate) struct Rpc<State = Uninit> {
-    socket: Arc<MaybeUninit<UdpSocket>>,
-    pending: Arc<MaybeUninit<Mutex<HashMap<Key, Sender<Option<Reply>>>>>>,
-    node_info: MaybeUninit<NodeInfo>,
-    node_state: PhantomData<State>,
-}
-
-impl Rpc<Running> {
-    /// Passes a reply received through the Rpc socket to the appropriate pending Receiver
-    fn handle_rep(self, token: Key, rep: Reply) {
-        thread::spawn(move || {
-            let pending = unsafe { self.pending.assume_init() };
-
-            let mut pending = pending.lock().unwrap();
-            let send_res = match pending.get(&token) {
-                Some(tx) => tx.send(Some(rep)),
-                None => {
-                    warn!("Unsolicited reply received, ignoring.");
-                    return;
-                }
-            };
-            if let Ok(_) = send_res {
-                pending.remove(&token);
-            }
-        });
-    }
-
-    /// Sends a message
-    fn send_msg(&self, rmsg: &RpcMessage, addr: SocketAddr) {
-        let socket = unsafe { self.socket.clone().assume_init() };
-
-        let enc_msg = serde_json::to_vec(rmsg).unwrap();
-        socket.send_to(&enc_msg, addr).unwrap();
-        debug!("| OUT | {:?} ==> {:?} ", rmsg.msg, rmsg.dst.id);
-    }
-
-    /// Sends a request of data from src_info to dst_info, returning a Receiver for the reply
-    pub fn send_req(&self, req: Request, dst: NodeInfo) -> Receiver<Option<Reply>> {
-        let pending = unsafe { self.pending.clone().assume_init() };
-
-        let (tx, rx) = mpsc::channel();
-        let mut pending = pending.lock().unwrap();
-        let mut token = Key::new();
-        while pending.contains_key(&token) {
-            token = Key::new();
-        }
-        pending.insert(token.to_owned(), tx.clone());
-        drop(pending);
-
-        let rmsg = RpcMessage {
-            token: token.to_owned(),
-            src: unsafe { self.node_info.assume_init() },
-            dst: dst,
-            msg: Message::Request(req),
-        };
-        self.send_msg(&rmsg, rmsg.dst.addr);
-
-        let rpc = self.clone();
-        thread::spawn(move || {
-            thread::sleep(Duration::from_millis(TIMEOUT));
-            if let Ok(_) = tx.send(None) {
-                let pending = unsafe { rpc.pending.assume_init() };
-
-                let mut pending = pending.lock().unwrap();
-                pending.remove(&token);
-            }
-        });
-        rx
-    }
+pub(crate) struct Rpc {
+    socket: Arc<UdpSocket>,
+    pending: Arc<Mutex<HashMap<Key, Sender<Option<Reply>>>>>,
+    node_info: NodeInfo,
 }
 
 impl Rpc {
     /// Initializes and runs RPC service
-    pub fn open(socket: UdpSocket, tx: Sender<ReqHandle>, node_info: NodeInfo) -> Rpc<Running> {
+    pub fn open(socket: UdpSocket, tx: Sender<ReqHandle>, node_info: NodeInfo) -> Rpc {
         let rpc = Rpc {
-            socket: Arc::new(MaybeUninit::new(socket)),
-            pending: Arc::new(MaybeUninit::new(Mutex::new(HashMap::new()))),
-            node_info: MaybeUninit::new(node_info),
-            node_state: PhantomData::<Running>,
+            socket: Arc::new(socket),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            node_info,
         };
 
         let rpc_clone = rpc.clone();
         thread::spawn(move || {
             let mut buf = [0u8; MESSAGE_LEN];
             loop {
-                let node_info = unsafe { rpc.node_info.assume_init() };
-                let socket = unsafe { rpc.socket.clone().assume_init() };
-
-                let (len, src_addr) = socket.recv_from(&mut buf).unwrap();
+                let (len, src_addr) = rpc.socket.recv_from(&mut buf).unwrap();
                 let buf_str = String::from(str::from_utf8(&buf[..len]).unwrap());
                 let mut rmsg: RpcMessage = serde_json::from_str(&buf_str).unwrap();
                 rmsg.src.addr = src_addr;
 
                 debug!("|  IN | {:?} <== {:?} ", rmsg.msg, rmsg.src.id);
 
-                if rmsg.dst.id != node_info.id {
+                if rmsg.dst.id != rpc.node_info.id {
                     warn!("Message received, but dst id does not match this node, ignoring.");
                     continue;
                 }
@@ -187,15 +111,58 @@ impl Rpc {
         });
         rpc_clone
     }
-}
 
-impl Rpc {
-    pub fn uninit() -> Rpc<Uninit> {
-        Rpc {
-            socket: Arc::new_uninit(),
-            pending: Arc::new_uninit(),
-            node_info: MaybeUninit::uninit(),
-            node_state: PhantomData::<Uninit>,
+    /// Passes a reply received through the Rpc socket to the appropriate pending Receiver
+    fn handle_rep(self, token: Key, rep: Reply) {
+        thread::spawn(move || {
+            let mut pending = self.pending.lock().unwrap();
+            let send_res = match pending.get(&token) {
+                Some(tx) => tx.send(Some(rep)),
+                None => {
+                    warn!("Unsolicited reply received, ignoring.");
+                    return;
+                }
+            };
+            if let Ok(_) = send_res {
+                pending.remove(&token);
+            }
+        });
+    }
+
+    /// Sends a message
+    fn send_msg(&self, rmsg: &RpcMessage, addr: SocketAddr) {
+        let enc_msg = serde_json::to_vec(rmsg).unwrap();
+        self.socket.send_to(&enc_msg, addr).unwrap();
+        debug!("| OUT | {:?} ==> {:?} ", rmsg.msg, rmsg.dst.id);
+    }
+
+    /// Sends a request of data from src_info to dst_info, returning a Receiver for the reply
+    pub fn send_req(&self, req: Request, dst: NodeInfo) -> Receiver<Option<Reply>> {
+        let (tx, rx) = mpsc::channel();
+        let mut pending = self.pending.lock().unwrap();
+        let mut token = Key::new();
+        while pending.contains_key(&token) {
+            token = Key::new();
         }
+        pending.insert(token.to_owned(), tx.clone());
+        drop(pending);
+
+        let rmsg = RpcMessage {
+            token: token.to_owned(),
+            src: self.node_info,
+            dst: dst,
+            msg: Message::Request(req),
+        };
+        self.send_msg(&rmsg, rmsg.dst.addr);
+
+        let rpc = self.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(TIMEOUT));
+            if let Ok(_) = tx.send(None) {
+                let mut pending = rpc.pending.lock().unwrap();
+                pending.remove(&token);
+            }
+        });
+        rx
     }
 }

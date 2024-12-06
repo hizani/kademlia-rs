@@ -3,14 +3,12 @@ use log::info;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
-use std::marker::PhantomData;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use crate::rpc;
 use crate::{
     routing::{NodeAndDistance, NodeInfo, RoutingTable},
     rpc::{ReqHandle, Rpc},
@@ -75,11 +73,11 @@ impl KademliaBuilder {
         todo!("bootstrap from file")
     }
 
-    pub fn build(&self) -> Kademlia<rpc::Uninit> {
+    pub fn start(&self) -> Kademlia {
         let address = if let Some(address) = self.address {
             address
         } else {
-            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))
+            IpAddr::V4(Ipv4Addr::from_bits(0))
         };
 
         let key = if let Some(key) = self.key.clone() {
@@ -102,58 +100,41 @@ impl KademliaBuilder {
             }
         }
 
-        Kademlia {
-            node_info,
-            routes: Arc::new(routes),
-            store: Arc::new(Mutex::new(HashMap::new())),
-            rpc: Arc::new(Rpc::uninit()),
-            rpc_state: PhantomData::<rpc::Uninit>,
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct Kademlia<RpcState = rpc::Uninit> {
-    routes: Arc<RoutingTable>,
-    store: Arc<Mutex<HashMap<Key, String>>>,
-    rpc: Arc<Rpc<RpcState>>,
-    node_info: NodeInfo,
-    rpc_state: PhantomData<RpcState>,
-}
-
-impl Default for Kademlia<rpc::Uninit> {
-    fn default() -> Self {
-        KademliaBuilder::new().build()
-    }
-}
-
-impl Kademlia<rpc::Uninit> {
-    pub fn new() -> KademliaBuilder {
-        KademliaBuilder::new()
-    }
-
-    pub fn start(self) -> Kademlia<rpc::Running> {
-        let socket = UdpSocket::bind(&self.node_info.addr).unwrap();
+        let socket = UdpSocket::bind(&node_info.addr).unwrap();
 
         let (tx, rx) = mpsc::channel();
-        let rpc = Rpc::open(socket, tx, self.node_info.clone());
+        let rpc = Rpc::open(socket, tx, node_info);
 
         let node = Kademlia {
-            routes: self.routes,
-            node_info: self.node_info,
-            store: self.store,
+            routes: Arc::new(routes),
+            node_info,
+            store: Arc::new(Mutex::new(HashMap::new())),
             rpc: Arc::new(rpc),
-            rpc_state: PhantomData::<rpc::Running>,
         };
 
         node.clone().start_req_handler(rx);
-        node.lookup_nodes(&node.node_info.id);
 
         node
     }
 }
 
-impl Kademlia<rpc::Running> {
+#[derive(Clone)]
+pub struct Kademlia {
+    routes: Arc<RoutingTable>,
+    store: Arc<Mutex<HashMap<Key, String>>>,
+    rpc: Arc<Rpc>,
+    node_info: NodeInfo,
+}
+
+impl Kademlia {
+    pub fn start() -> Self {
+        KademliaBuilder::new().start()
+    }
+
+    pub fn new() -> KademliaBuilder {
+        KademliaBuilder::new()
+    }
+
     fn start_req_handler(self, rx: Receiver<ReqHandle>) {
         thread::spawn(move || {
             for req_handle in rx.iter() {
@@ -433,9 +414,7 @@ impl Kademlia<rpc::Running> {
             _ = self.routes.update(err.node_info);
         }
     }
-}
 
-impl Kademlia {
     pub fn print_routes(&self) {
         self.routes.print();
     }
