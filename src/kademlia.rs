@@ -83,7 +83,7 @@ impl KademliaBuilder {
         let key = if let Some(key) = self.key.clone() {
             key
         } else {
-            Key::new()
+            Key::random()
         };
 
         let node_info = NodeInfo {

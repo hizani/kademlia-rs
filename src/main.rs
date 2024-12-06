@@ -40,7 +40,7 @@ fn main() {
 
     let mut dummy_info = NodeInfo {
         addr: SocketAddr::from_str("127.0.0.1:0").unwrap(),
-        id: Key::new(),
+        id: Key::random(),
     };
 
     loop {

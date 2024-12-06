@@ -15,12 +15,12 @@ use crate::KEY_LEN;
 pub struct Key([u8; KEY_LEN]);
 
 impl Key {
-    /// Returns a random, KEY_LEN long byte string.
-    pub fn new() -> Key {
+    /// Initializes [Key] with a random, [KEY_LEN] long array.
+    pub fn random() -> Key {
         Key(rand::random())
     }
 
-    /// Returns the hashed Key of data.
+    /// Returns the hashed [Key] of data.
     pub fn hash(data: &[u8]) -> Key {
         let hash = sha256::hash(data);
         Key(hash.into_bytes())

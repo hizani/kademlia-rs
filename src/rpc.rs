@@ -140,9 +140,9 @@ impl Rpc {
     pub fn send_req(&self, req: Request, dst: NodeInfo) -> Receiver<Option<Reply>> {
         let (tx, rx) = mpsc::channel();
         let mut pending = self.pending.lock().unwrap();
-        let mut token = Key::new();
+        let mut token = Key::random();
         while pending.contains_key(&token) {
-            token = Key::new();
+            token = Key::random();
         }
         pending.insert(token.to_owned(), tx.clone());
         drop(pending);
