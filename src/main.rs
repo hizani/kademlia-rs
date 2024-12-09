@@ -16,6 +16,8 @@ ln <key>             ..performs iterative node lookup
 lv <string key>      ..performs iterative value lookup
 ";
 
+// TODO: Move this from src to examples
+
 fn main() {
     env_logger::Builder::new()
         .filter_level(log::LevelFilter::Trace)
@@ -36,7 +38,10 @@ fn main() {
         handle.bootstrap(nodes);
     }
 
-    let handle = handle.address("127.0.0.1".parse().unwrap()).start();
+    let handle = handle
+        .address("127.0.0.1".parse().unwrap())
+        .start()
+        .unwrap();
 
     let mut dummy_info = NodeInfo {
         addr: SocketAddr::from_str("127.0.0.1:0").unwrap(),
@@ -79,7 +84,9 @@ fn main() {
                 dummy_info.id = Key::from_hex(args[2]).unwrap();
                 println!(
                     "{:?}",
-                    handle.find_value(dummy_info.clone(), &Key::hash(args[3].as_bytes()))
+                    handle
+                        .find_value(dummy_info.clone(), &Key::hash(args[3].as_bytes()))
+                        .unwrap()
                 );
             }
             "ln" => {

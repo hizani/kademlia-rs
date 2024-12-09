@@ -109,7 +109,12 @@ impl RoutingTable {
             if let Some((bucket, index)) = self.get_bucket_by_key(item) {
                 (bucket, index)
             } else {
-                (self.buckets.last().unwrap(), N_BUCKETS - 1)
+                (
+                    self.buckets
+                        .last()
+                        .expect("impossible state: initialized routing table with no buckets"),
+                    N_BUCKETS - 1,
+                )
             };
 
         let mut closest_nodes: Vec<NodeAndDistance> = Vec::with_capacity(count);

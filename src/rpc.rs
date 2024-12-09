@@ -1,14 +1,14 @@
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
 use std::str;
 use std::sync::mpsc;
-use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::kademlia::{KademliaError, Result};
 use crate::{
     kademlia::{Reply, Request},
     routing::NodeInfo,
@@ -16,7 +16,7 @@ use crate::{
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RpcMessage {
+pub(crate) struct RpcMessage {
     token: Key,
     src: NodeInfo,
     dst: NodeInfo,
@@ -24,13 +24,13 @@ pub struct RpcMessage {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum Message {
+pub(crate) enum Message {
     Kill,
     Request(Request),
     Reply(Reply),
 }
 
-pub struct ReqHandle {
+pub(crate) struct ReqHandle {
     token: Key,
     src: NodeInfo,
     req: Request,
@@ -44,27 +44,28 @@ impl ReqHandle {
     pub fn get_src(&self) -> &NodeInfo {
         &self.src
     }
-    pub fn rep(self, rep: Reply) {
+    pub fn reply(self, rep: Reply) -> Result<()> {
         let rep_rmsg = RpcMessage {
             token: self.token,
             src: self.rpc.node_info,
             dst: self.src.clone(),
             msg: Message::Reply(rep),
         };
-        self.rpc.send_msg(&rep_rmsg, self.src.addr);
+
+        self.rpc.send_msg(&rep_rmsg, self.src.addr)
     }
 }
 
 #[derive(Clone)]
 pub(crate) struct Rpc {
     socket: Arc<UdpSocket>,
-    pending: Arc<Mutex<HashMap<Key, Sender<Option<Reply>>>>>,
+    pending: Arc<Mutex<HashMap<Key, mpsc::Sender<Option<Reply>>>>>,
     node_info: NodeInfo,
 }
 
 impl Rpc {
     /// Initializes and runs RPC service
-    pub fn open(socket: UdpSocket, tx: Sender<ReqHandle>, node_info: NodeInfo) -> Rpc {
+    pub fn new(socket: UdpSocket, tx: mpsc::Sender<ReqHandle>, node_info: NodeInfo) -> Rpc {
         let rpc = Rpc {
             socket: Arc::new(socket),
             pending: Arc::new(Mutex::new(HashMap::new())),
@@ -75,9 +76,21 @@ impl Rpc {
         thread::spawn(move || {
             let mut buf = [0u8; MESSAGE_LEN];
             loop {
-                let (len, src_addr) = rpc.socket.recv_from(&mut buf).unwrap();
-                let buf_str = String::from(str::from_utf8(&buf[..len]).unwrap());
-                let mut rmsg: RpcMessage = serde_json::from_str(&buf_str).unwrap();
+                let (len, src_addr) = match rpc.socket.recv_from(&mut buf) {
+                    Ok(node_info) => node_info,
+                    Err(err) => {
+                        error!("Failed to receive datagram from a socket: {}", err);
+                        continue;
+                    }
+                };
+
+                let mut rmsg: RpcMessage = match serde_json::from_slice(&buf[..len]) {
+                    Ok(rmsg) => rmsg,
+                    Err(err) => {
+                        warn!("Message received, but cannot be parsed: {}", err);
+                        continue;
+                    }
+                };
                 rmsg.src.addr = src_addr;
 
                 debug!("|  IN | {:?} <== {:?} ", rmsg.msg, rmsg.src.id);
@@ -109,6 +122,7 @@ impl Rpc {
                 }
             }
         });
+
         rpc_clone
     }
 
@@ -130,14 +144,16 @@ impl Rpc {
     }
 
     /// Sends a message
-    fn send_msg(&self, rmsg: &RpcMessage, addr: SocketAddr) {
-        let enc_msg = serde_json::to_vec(rmsg).unwrap();
-        self.socket.send_to(&enc_msg, addr).unwrap();
+    fn send_msg(&self, rmsg: &RpcMessage, addr: SocketAddr) -> Result<()> {
+        let enc_msg =
+            serde_json::to_vec(rmsg).or_else(|e| Err(KademliaError::CantSerializeMsg(e)))?;
+        self.socket.send_to(&enc_msg, addr)?;
         debug!("| OUT | {:?} ==> {:?} ", rmsg.msg, rmsg.dst.id);
+        Ok(())
     }
 
-    /// Sends a request of data from src_info to dst_info, returning a Receiver for the reply
-    pub fn send_req(&self, req: Request, dst: NodeInfo) -> Receiver<Option<Reply>> {
+    /// Sends a request of data from src_info to dst_info
+    pub fn send_req(&self, req: Request, dst: NodeInfo) -> Result<Reply> {
         let (tx, rx) = mpsc::channel();
         let mut pending = self.pending.lock().unwrap();
         let mut token = Key::random();
@@ -153,7 +169,7 @@ impl Rpc {
             dst: dst,
             msg: Message::Request(req),
         };
-        self.send_msg(&rmsg, rmsg.dst.addr);
+        self.send_msg(&rmsg, rmsg.dst.addr)?;
 
         let rpc = self.clone();
         thread::spawn(move || {
@@ -163,6 +179,13 @@ impl Rpc {
                 pending.remove(&token);
             }
         });
-        rx
+
+        match rx
+            .recv()
+            .expect("impossible state: response sender closed before response resierver")
+        {
+            Some(resp) => Ok(resp),
+            None => Err(KademliaError::RequestTimeout),
+        }
     }
 }

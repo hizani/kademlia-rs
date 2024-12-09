@@ -1,11 +1,9 @@
-use log::error;
-use log::info;
+use log::{error, info, trace, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
+use std::io::{self, Read};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::mpsc;
-use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -32,6 +30,7 @@ pub enum FindValueResult {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Reply {
     Ping,
+    Store,
     FindNode(Vec<NodeAndDistance>),
     FindValue(FindValueResult),
 }
@@ -43,6 +42,20 @@ pub struct KademliaBuilder {
     port: u16,
     key: Option<Key>,
 }
+
+#[derive(Debug, thiserror::Error)]
+pub enum KademliaError {
+    #[error("request has timed out")]
+    RequestTimeout,
+    #[error("can't serialize message: {}", 0)]
+    CantSerializeMsg(serde_json::Error),
+    #[error("can't bind udp socket: {}", 0)]
+    CantBindUdpSocket(io::Error),
+    #[error(transparent)]
+    IoError(#[from] io::Error),
+}
+
+pub type Result<T> = core::result::Result<T, KademliaError>;
 
 impl KademliaBuilder {
     pub fn new() -> Self {
@@ -73,7 +86,7 @@ impl KademliaBuilder {
         todo!("bootstrap from file")
     }
 
-    pub fn start(&self) -> Kademlia {
+    pub fn start(&self) -> Result<Kademlia> {
         let address = if let Some(address) = self.address {
             address
         } else {
@@ -100,21 +113,21 @@ impl KademliaBuilder {
             }
         }
 
-        let socket = UdpSocket::bind(&node_info.addr).unwrap();
-
         let (tx, rx) = mpsc::channel();
-        let rpc = Rpc::open(socket, tx, node_info);
+        let socket = UdpSocket::bind(node_info.addr)
+            .or_else(|err| Err(KademliaError::CantBindUdpSocket(err)))?;
+
+        let rpc = Rpc::new(socket, tx, node_info);
 
         let node = Kademlia {
             routes: Arc::new(routes),
-            node_info,
             store: Arc::new(Mutex::new(HashMap::new())),
             rpc: Arc::new(rpc),
         };
 
         node.clone().start_req_handler(rx);
 
-        node
+        Ok(node)
     }
 }
 
@@ -123,11 +136,10 @@ pub struct Kademlia {
     routes: Arc<RoutingTable>,
     store: Arc<Mutex<HashMap<Key, String>>>,
     rpc: Arc<Rpc>,
-    node_info: NodeInfo,
 }
 
 impl Kademlia {
-    pub fn start() -> Self {
+    pub fn start() -> Result<Self> {
         KademliaBuilder::new().start()
     }
 
@@ -135,34 +147,36 @@ impl Kademlia {
         KademliaBuilder::new()
     }
 
-    fn start_req_handler(self, rx: Receiver<ReqHandle>) {
+    fn start_req_handler(self, rx: mpsc::Receiver<ReqHandle>) {
         thread::spawn(move || {
             for req_handle in rx.iter() {
                 let node = self.clone();
                 thread::spawn(move || {
                     let rep =
                         node.handle_req(req_handle.get_req().clone(), req_handle.get_src().clone());
-                    req_handle.rep(rep);
+                    if let Err(e) = req_handle.reply(rep) {
+                        error!("Reply send error: {}", e)
+                    }
                 });
             }
+
             info!("Channel closed, since sender is dead.");
         });
     }
 
     fn handle_req(&self, req: Request, src: NodeInfo) -> Reply {
-        self.update_table(src);
+        self.append_with_refresh_no_error(src);
+
         match req {
             Request::Ping => Reply::Ping,
             Request::Store(k, v) => {
                 self.store.lock().unwrap().insert(k, v);
 
-                Reply::Ping
+                Reply::Store
             }
             Request::FindNode(id) => Reply::FindNode(self.routes.closest_nodes(&id, K_PARAM)),
             Request::FindValue(id) => {
-                let mut store = self.store.lock().unwrap();
-                let lookup_res = store.remove(&id);
-                drop(store);
+                let lookup_res = self.store.lock().unwrap().remove(&id);
 
                 match lookup_res {
                     Some(v) => Reply::FindValue(FindValueResult::Value(v)),
@@ -174,77 +188,121 @@ impl Kademlia {
         }
     }
 
-    pub fn ping_raw(&self, dst: NodeInfo) -> Receiver<Option<Reply>> {
-        self.rpc.send_req(Request::Ping, dst)
+    pub fn ping_raw(&self, dst: NodeInfo) -> Result<Reply> {
+        self.rpc.send_req(Request::Ping, dst).map_err(|err| {
+            if let KademliaError::RequestTimeout = err {
+                trace!("DST {} {}: Ping req timeout", dst.addr, dst.id);
+                self.routes.remove(&dst.id);
+            } else {
+                error!("DST {} {}: Ping req error: {}", dst.addr, dst.id, err);
+            }
+
+            err
+        })
     }
 
-    pub fn store_raw(&self, dst: NodeInfo, k: &Key, v: &str) -> Receiver<Option<Reply>> {
+    // TODO: accept only v and evaluate the Key inside the function
+    pub fn store_raw(&self, dst: NodeInfo, k: &Key, v: &str) -> Result<Reply> {
         self.rpc
             .send_req(Request::Store(k.to_owned(), v.to_owned()), dst)
+            .map_err(|err| {
+                if let KademliaError::RequestTimeout = err {
+                    trace!("DST {} {}: Store req timeout", dst.addr, dst.id);
+                    self.routes.remove(&dst.id);
+                } else {
+                    error!("DST {} {}: Store req error: {}", dst.addr, dst.id, err);
+                }
+
+                err
+            })
     }
 
-    pub fn find_node_raw(&self, dst: NodeInfo, k: &Key) -> Receiver<Option<Reply>> {
-        self.rpc.send_req(Request::FindNode(k.to_owned()), dst)
+    pub fn find_node_raw(&self, dst: NodeInfo, k: &Key) -> Result<Reply> {
+        self.rpc
+            .send_req(Request::FindNode(k.to_owned()), dst)
+            .map_err(|err| {
+                if let KademliaError::RequestTimeout = err {
+                    trace!("DST {} {}: Find node req timeout", dst.addr, dst.id);
+                    self.routes.remove(&dst.id);
+                } else {
+                    error!("DST {} {}: Find node req error: {}", dst.addr, dst.id, err);
+                }
+
+                err
+            })
     }
 
-    pub fn find_value_raw(&self, dst: NodeInfo, k: &Key) -> Receiver<Option<Reply>> {
-        self.rpc.send_req(Request::FindValue(k.clone()), dst)
+    pub fn find_value_raw(&self, dst: NodeInfo, k: &Key) -> Result<Reply> {
+        self.rpc
+            .send_req(Request::FindValue(k.to_owned()), dst)
+            .map_err(|err| {
+                if let KademliaError::RequestTimeout = err {
+                    trace!("DST {} {}: Find  value req timeout", dst.addr, dst.id);
+                    self.routes.remove(&dst.id);
+                } else {
+                    error!("DST {} {}: Find value req error: {}", dst.addr, dst.id, err);
+                }
+
+                err
+            })
     }
 
-    pub fn ping(&self, dst: NodeInfo) -> Option<()> {
-        let rep = self.ping_raw(dst.clone()).recv().unwrap(); // err: pending reply channel closed
-        if let Some(Reply::Ping) = rep {
-            self.update_table(dst);
-            Some(())
+    pub fn ping(&self, dst: NodeInfo) -> Result<()> {
+        if let Err(e) = self.ping_raw(dst.clone()) {
+            Err(e)
         } else {
-            self.routes.remove(&dst.id);
-            None
+            self.append_with_refresh_no_error(dst);
+            Ok(())
         }
     }
 
     /// Pings dst without trying to clean K-Bucket if there is no room for
     /// dst insertion
-    pub fn ping_discard(&self, dst: NodeInfo) -> Option<()> {
-        let rep = self.ping_raw(dst.clone()).recv().unwrap(); // err: pending reply channel closed
-        if let Some(Reply::Ping) = rep {
+    pub fn ping_discard(&self, dst: NodeInfo) -> Result<()> {
+        if let Err(e) = self.ping_raw(dst.clone()) {
+            Err(e)
+        } else {
             _ = self.routes.update(dst);
-            Some(())
-        } else {
-            self.routes.remove(&dst.id);
-            None
+            Ok(())
         }
     }
 
-    pub fn store(&self, dst: NodeInfo, k: &Key, v: &str) -> Option<()> {
-        let rep = self.store_raw(dst.clone(), &k, &v).recv().unwrap(); // err: pending reply channel closed
-        if let Some(Reply::Ping) = rep {
-            self.update_table(dst);
-            Some(())
+    // TODO: accept only v and evaluate the Key inside the function
+    pub fn store(&self, dst: NodeInfo, k: &Key, v: &str) -> Result<()> {
+        if let Err(e) = self.store_raw(dst.clone(), &k, &v) {
+            Err(e)
         } else {
-            self.routes.remove(&dst.id);
-            None
+            Ok(self.append_with_refresh_no_error(dst))
         }
     }
 
-    pub fn find_node(&self, dst: NodeInfo, id: &Key) -> Option<Vec<NodeAndDistance>> {
-        let rep = self.find_node_raw(dst.clone(), id).recv().unwrap(); // err: pending reply channel closed
-        if let Some(Reply::FindNode(entries)) = rep {
-            self.update_table(dst);
-            Some(entries)
-        } else {
-            self.routes.remove(&dst.id);
-            None
+    pub fn find_node(&self, dst: NodeInfo, id: &Key) -> Result<Vec<NodeAndDistance>> {
+        match self.find_node_raw(dst.clone(), &id) {
+            Err(e) => Err(e),
+            Ok(reply) => {
+                self.append_with_refresh_no_error(dst);
+
+                if let Reply::FindNode(nodes) = reply {
+                    Ok(nodes)
+                } else {
+                    Ok(vec![])
+                }
+            }
         }
     }
 
-    pub fn find_value(&self, dst: NodeInfo, k: &Key) -> Option<FindValueResult> {
-        let rep = self.find_value_raw(dst.clone(), k).recv().unwrap(); // err: pending reply channel closed
-        if let Some(Reply::FindValue(res)) = rep {
-            self.update_table(dst);
-            Some(res)
-        } else {
-            self.routes.remove(&dst.id);
-            None
+    pub fn find_value(&self, dst: NodeInfo, k: &Key) -> Result<Option<FindValueResult>> {
+        match self.find_value_raw(dst.clone(), &k) {
+            Err(e) => Err(e),
+            Ok(reply) => {
+                self.append_with_refresh_no_error(dst);
+
+                if let Reply::FindValue(result) = reply {
+                    Ok(Some(result))
+                } else {
+                    Ok(None)
+                }
+            }
         }
     }
 
@@ -273,17 +331,20 @@ impl Kademlia {
                     }
                 }
             }
+
+            let id = id.clone();
+
             for &NodeAndDistance(ref node_info, _) in &queries {
-                let ni = node_info.clone();
+                let node_info = node_info.clone();
                 let node = self.clone();
-                let id = id.clone();
-                joins.push(thread::spawn(move || node.find_node(ni.clone(), &id)));
+                joins.push(thread::spawn(move || node.find_node(node_info, &id)));
             }
             for j in joins {
                 results.push(j.join().unwrap());
             }
+
             for (res, query) in results.into_iter().zip(queries) {
-                if let Some(entries) = res {
+                if let Ok(entries) = res {
                     nodes_distances.insert(query);
                     for entry in entries {
                         if queried.insert(entry.clone()) {
@@ -300,12 +361,13 @@ impl Kademlia {
         nodes_distances
     }
 
-    pub fn lookup_value(&self, k: &Key) -> (Option<String>, Vec<NodeAndDistance>) {
+    // TODO: return only Option<String>
+    pub fn lookup_value(&self, id: &Key) -> (Option<String>, Vec<NodeAndDistance>) {
         let mut queried = HashSet::new();
-        let mut nodes_distances = HashSet::new();
+        let mut potential_holders = HashSet::new();
 
         // Add the closest nodes we know to our queue of nodes to query
-        let mut to_query = self.routes.closest_nodes(k, K_PARAM);
+        let mut to_query = self.routes.closest_nodes(id, K_PARAM);
 
         for entry in &to_query {
             queried.insert(entry.clone());
@@ -325,43 +387,49 @@ impl Kademlia {
                     }
                 }
             }
+
+            let id = id.clone();
+
             for &NodeAndDistance(ref ni, _) in &queries {
-                let k = k.to_owned();
-                let ni = ni.clone();
+                let node_info = ni.clone();
                 let node = self.clone();
-                joins.push(thread::spawn(move || node.find_value(ni.clone(), &k)));
+                joins.push(thread::spawn(move || {
+                    node.find_value(node_info.clone(), &id)
+                }));
             }
             for j in joins {
                 results.push(j.join().unwrap());
             }
             for (res, query) in results.into_iter().zip(queries) {
-                if let Some(fvres) = res {
-                    match fvres {
-                        FindValueResult::Nodes(entries) => {
-                            nodes_distances.insert(query);
-                            for entry in entries {
-                                if queried.insert(entry.clone()) {
-                                    to_query.push(entry);
+                if let Ok(fvres) = res {
+                    if let Some(fvres) = fvres {
+                        match fvres {
+                            FindValueResult::Nodes(entries) => {
+                                potential_holders.insert(query);
+                                for entry in entries {
+                                    if queried.insert(entry.clone()) {
+                                        to_query.push(entry);
+                                    }
                                 }
                             }
-                        }
-                        FindValueResult::Value(val) => {
-                            let mut nodes_distances =
-                                nodes_distances.into_iter().collect::<Vec<_>>();
-                            nodes_distances.sort_by(|a, b| a.1.cmp(&b.1));
-                            nodes_distances.truncate(K_PARAM);
-                            return (Some(val), nodes_distances);
+                            FindValueResult::Value(val) => {
+                                let mut potential_holders =
+                                    potential_holders.into_iter().collect::<Vec<_>>();
+                                potential_holders.sort_by(|a, b| a.1.cmp(&b.1));
+                                potential_holders.truncate(K_PARAM);
+                                return (Some(val), potential_holders);
+                            }
                         }
                     }
                 }
             }
         }
 
-        let mut nodes_distances = nodes_distances.into_iter().collect::<Vec<_>>();
-        nodes_distances.sort_by(|a, b| a.1.cmp(&b.1));
-        nodes_distances.truncate(K_PARAM);
+        let mut potential_holders = potential_holders.into_iter().collect::<Vec<_>>();
+        potential_holders.sort_by(|a, b| a.1.cmp(&b.1));
+        potential_holders.truncate(K_PARAM);
 
-        (None, nodes_distances)
+        (None, potential_holders)
     }
 
     pub fn put(&self, v: &str) {
@@ -391,27 +459,50 @@ impl Kademlia {
             return Some(v.to_owned());
         }
 
+        // TODO: Store the value in nodes from closest bucket to the k
         let (v_opt, mut nodes) = self.lookup_value(k);
         v_opt.map(|v| {
             if let Some(NodeAndDistance(store_target, _)) = nodes.pop() {
-                self.store(store_target, &k, &v);
+                if let Err(e) = self.store(store_target, &k, &v) {
+                    warn!(
+                        "Can't store value {} in node {} {}: {}",
+                        k, store_target.addr, store_target.id, e
+                    );
+                    self.store.lock().unwrap().insert(k.clone(), v.clone());
+                }
             } else {
-                self.store(self.node_info.clone(), k, &v);
+                self.store.lock().unwrap().insert(k.clone(), v.clone());
             }
             v
         })
     }
 
-    fn update_table(&self, dst: NodeInfo) {
-        if let Err(err) = self.routes.update(dst) {
-            for node in err.nodes {
-                if let None = self.ping_discard(node) {
-                    break;
+    /// Appends a node into the routing table and evicts non-responsive nodes
+    /// from the bucket if there is no room for it.
+    pub fn append_with_refresh(&self, node_info: NodeInfo) -> Result<()> {
+        if let Err(update_err) = self.routes.update(node_info) {
+            for node in update_err.nodes {
+                if let Err(ping_err) = self.ping_discard(node) {
+                    match ping_err {
+                        KademliaError::RequestTimeout => break,
+                        _ => return Err(ping_err),
+                    }
                 }
             }
 
             // discard dst if there is still no room after pinging whole K-Bucket
-            _ = self.routes.update(err.node_info);
+            _ = self.routes.update(update_err.node_info);
+        }
+
+        Ok(())
+    }
+
+    fn append_with_refresh_no_error(&self, node_info: NodeInfo) {
+        if let Err(e) = self.append_with_refresh(node_info) {
+            warn!(
+                "{} {}: Can't update routing table: {}",
+                node_info.addr, node_info.id, e
+            )
         }
     }
 
