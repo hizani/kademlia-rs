@@ -425,11 +425,7 @@ impl Kademlia {
             }
         }
 
-        let mut potential_holders = potential_holders.into_iter().collect::<Vec<_>>();
-        potential_holders.sort_by(|a, b| a.1.cmp(&b.1));
-        potential_holders.truncate(K_PARAM);
-
-        (None, potential_holders)
+        (None, vec![])
     }
 
     pub fn put(&self, v: &str) {
