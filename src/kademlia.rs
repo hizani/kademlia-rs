@@ -201,8 +201,9 @@ impl Kademlia {
         })
     }
 
-    // TODO: accept only v and evaluate the Key inside the function
-    pub fn store_raw(&self, dst: NodeInfo, k: &Key, v: &str) -> Result<Reply> {
+    pub fn store_raw(&self, dst: NodeInfo, v: &str) -> Result<Reply> {
+        let k = Key::hash(v.as_bytes());
+
         self.rpc
             .send_req(Request::Store(k.to_owned(), v.to_owned()), dst)
             .map_err(|err| {
@@ -267,9 +268,8 @@ impl Kademlia {
         }
     }
 
-    // TODO: accept only v and evaluate the Key inside the function
-    pub fn store(&self, dst: NodeInfo, k: &Key, v: &str) -> Result<()> {
-        if let Err(e) = self.store_raw(dst.clone(), &k, &v) {
+    pub fn store(&self, dst: NodeInfo, v: &str) -> Result<()> {
+        if let Err(e) = self.store_raw(dst.clone(), &v) {
             Err(e)
         } else {
             Ok(self.append_with_refresh_no_error(dst))
@@ -442,10 +442,9 @@ impl Kademlia {
 
         for NodeAndDistance(node_info, _) in candidates {
             let node = self.clone();
-            let k = k.to_owned();
             let v = v.to_owned();
             thread::spawn(move || {
-                node.store(node_info, &k, &v).unwrap();
+                node.store(node_info, &v).unwrap();
             });
         }
     }
@@ -459,7 +458,7 @@ impl Kademlia {
         let (v_opt, mut nodes) = self.lookup_value(k);
         v_opt.map(|v| {
             if let Some(NodeAndDistance(store_target, _)) = nodes.pop() {
-                if let Err(e) = self.store(store_target, &k, &v) {
+                if let Err(e) = self.store(store_target, &v) {
                     warn!(
                         "Can't store value {} in node {} {}: {}",
                         k, store_target.addr, store_target.id, e

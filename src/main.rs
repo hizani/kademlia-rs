@@ -66,10 +66,7 @@ fn main() {
             "s" => {
                 dummy_info.addr = SocketAddr::from_str(args[1]).unwrap();
                 dummy_info.id = Key::from_hex(args[2]).unwrap();
-                println!(
-                    "{:?}",
-                    handle.store(dummy_info.clone(), &Key::hash(args[3].as_bytes()), args[4])
-                );
+                println!("{:?}", handle.store(dummy_info.clone(), args[3]));
             }
             "fn" => {
                 dummy_info.addr = SocketAddr::from_str(args[1]).unwrap();
