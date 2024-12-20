@@ -12,7 +12,6 @@ p <ip>:<port> <key>  ..pings the node
 s <ip>:<port> <key>  ..sends store req to node
 fn <ip>:<port> <key> ..sends find_node req to node
 fv <ip>:<port> <key> ..sends find_value req to node
-ln <key>             ..performs iterative node lookup
 lv <string key>      ..performs iterative value lookup
 ";
 
@@ -73,7 +72,7 @@ fn main() {
                 dummy_info.id = Key::from_hex(args[2]).unwrap();
                 println!(
                     "{:?}",
-                    handle.find_node(dummy_info.clone(), &Key::from_hex(args[3]).unwrap())
+                    handle.find_node(dummy_info.clone(), Key::from_hex(args[3]).unwrap())
                 );
             }
             "fv" => {
@@ -87,10 +86,7 @@ fn main() {
                 );
             }
             "ln" => {
-                println!(
-                    "{:?}",
-                    handle.lookup_nodes(&Key::from_hex(args[1]).unwrap())
-                );
+                println!("{:?}", handle.lookup_nodes(&Key::hash(args[1].as_bytes())));
             }
             "lv" => {
                 println!("{:?}", handle.lookup_value(&Key::hash(args[1].as_bytes())));

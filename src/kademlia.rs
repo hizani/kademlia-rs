@@ -1,12 +1,15 @@
-use log::{error, info, trace, warn};
+use log::{debug, error, info, trace, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
-use std::sync::mpsc;
+use std::sync::mpmc::Receiver;
+use std::sync::{mpmc, mpsc};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use crate::routing::ParseNodeInfoError;
+use crate::KEY_LEN;
 use crate::{
     routing::{NodeAndDistance, NodeInfo, RoutingTable},
     rpc::{ReqHandle, Rpc},
@@ -43,14 +46,31 @@ pub struct KademliaBuilder {
     key: Option<Key>,
 }
 
+#[derive(Clone)]
+pub struct Kademlia {
+    routes: Arc<RoutingTable>,
+    store: Arc<Mutex<HashMap<Key, String>>>,
+    rpc: Arc<Rpc>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum KademliaStartError {
+    #[error("can't bind udp socket: {}", 0)]
+    CantBindUdpSocket(io::Error),
+    #[error(transparent)]
+    CantBootstrap(#[from] ParseNodeInfoError),
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum KademliaError {
     #[error("request has timed out")]
     RequestTimeout,
+    #[error("received unknown reply")]
+    UnknownResponse,
     #[error("can't serialize message: {}", 0)]
     CantSerializeMsg(serde_json::Error),
     #[error("can't bind udp socket: {}", 0)]
-    CantBindUdpSocket(io::Error),
+    StartError(#[from] KademliaStartError),
     #[error(transparent)]
     IoError(#[from] io::Error),
 }
@@ -82,61 +102,85 @@ impl KademliaBuilder {
         self
     }
 
-    pub fn read_bootstrap_nodes<'a>(&'a mut self, _: impl Read) -> &'a mut Self {
-        todo!("bootstrap from file")
+    pub fn bootstrap_from_reader<'a>(&'a mut self, reader: impl Read) -> Result<&'a mut Self> {
+        const BUFLEN: usize = 47 + KEY_LEN * 2;
+        let mut buf = Vec::with_capacity(BUFLEN);
+        let mut nodes = Vec::new();
+
+        for byte in reader.bytes() {
+            match byte {
+                Ok(byte) => {
+                    if byte == b'\n' {
+                        let trim = buf.trim_ascii_end();
+
+                        nodes.push(
+                            NodeInfo::try_from(trim)
+                                .or_else(|e| Err(KademliaStartError::CantBootstrap(e)))?,
+                        );
+                        buf.clear();
+                        continue;
+                    }
+
+                    buf.push(byte);
+                }
+                Err(_) => {
+                    nodes.push(
+                        NodeInfo::try_from(buf.as_slice())
+                            .or_else(|e| Err(KademliaStartError::CantBootstrap(e)))?,
+                    );
+                }
+            }
+        }
+
+        self.bootstrap_nodes = Some(nodes);
+        Ok(self)
     }
 
-    pub fn start(&self) -> Result<Kademlia> {
+    pub fn start(&mut self) -> Result<Kademlia> {
         let address = if let Some(address) = self.address {
             address
         } else {
             IpAddr::V4(Ipv4Addr::from_bits(0))
         };
 
-        let key = if let Some(key) = self.key.clone() {
+        let key = if let Some(key) = self.key {
             key
         } else {
             Key::random()
         };
 
+        let socket = UdpSocket::bind(SocketAddr::new(address, self.port))
+            .or_else(|err| Err(KademliaStartError::CantBindUdpSocket(err)))?;
+
         let node_info = NodeInfo {
-            addr: SocketAddr::new(address, self.port),
+            addr: socket
+                .local_addr()
+                .or_else(|err| Err(KademliaStartError::CantBindUdpSocket(err)))?,
             id: key,
         };
 
-        let routes = RoutingTable::new(node_info.clone());
-        if let Some(bootstrap_nodes) = &self.bootstrap_nodes {
-            for node in bootstrap_nodes {
-                if let Err(err) = routes.update(node.clone()) {
-                    error!("bootstrap: can't insert node {}: {}", node_info.id, err)
-                }
-            }
-        }
-
-        let (tx, rx) = mpsc::channel();
-        let socket = UdpSocket::bind(node_info.addr)
-            .or_else(|err| Err(KademliaError::CantBindUdpSocket(err)))?;
-
-        let rpc = Rpc::new(socket, tx, node_info);
+        let (req_tx, req_rx) = mpsc::channel();
+        let rpc = Rpc::new(socket, req_tx, node_info);
 
         let node = Kademlia {
-            routes: Arc::new(routes),
+            routes: Arc::new(RoutingTable::new(node_info.clone())),
             store: Arc::new(Mutex::new(HashMap::new())),
             rpc: Arc::new(rpc),
         };
 
-        node.clone().start_req_handler(rx);
+        info!("new node created {} {}", &node_info.addr, &node_info.id);
+
+        if let Some(bootstrap_nodes) = &mut self.bootstrap_nodes {
+            node.ping_slice(&bootstrap_nodes);
+        }
+
+        node.clone().start_req_handler(req_rx);
 
         Ok(node)
     }
 }
 
-#[derive(Clone)]
-pub struct Kademlia {
-    routes: Arc<RoutingTable>,
-    store: Arc<Mutex<HashMap<Key, String>>>,
-    rpc: Arc<Rpc>,
-}
+// TODO: use async (tokio?) instead of bare threads.
 
 impl Kademlia {
     pub fn start() -> Result<Self> {
@@ -155,12 +199,12 @@ impl Kademlia {
                     let rep =
                         node.handle_req(req_handle.get_req().clone(), req_handle.get_src().clone());
                     if let Err(e) = req_handle.reply(rep) {
-                        error!("Reply send error: {}", e)
+                        error!("reply send error: {}", e)
                     }
                 });
             }
 
-            info!("Channel closed, since sender is dead.");
+            info!("channel closed, since sender is dead.");
         });
     }
 
@@ -188,10 +232,11 @@ impl Kademlia {
         }
     }
 
+    /// TODO: Maybe extract self.routes.remove from raw fns to the higher ones?
     pub fn ping_raw(&self, dst: NodeInfo) -> Result<Reply> {
         self.rpc.send_req(Request::Ping, dst).map_err(|err| {
             if let KademliaError::RequestTimeout = err {
-                trace!("DST {} {}: Ping req timeout", dst.addr, dst.id);
+                debug!("DST {} {}: Ping req timeout", dst.addr, dst.id);
                 self.routes.remove(&dst.id);
             } else {
                 error!("DST {} {}: Ping req error: {}", dst.addr, dst.id, err);
@@ -208,7 +253,7 @@ impl Kademlia {
             .send_req(Request::Store(k.to_owned(), v.to_owned()), dst)
             .map_err(|err| {
                 if let KademliaError::RequestTimeout = err {
-                    trace!("DST {} {}: Store req timeout", dst.addr, dst.id);
+                    debug!("DST {} {}: Store req timeout", dst.addr, dst.id);
                     self.routes.remove(&dst.id);
                 } else {
                     error!("DST {} {}: Store req error: {}", dst.addr, dst.id, err);
@@ -218,12 +263,12 @@ impl Kademlia {
             })
     }
 
-    pub fn find_node_raw(&self, dst: NodeInfo, k: &Key) -> Result<Reply> {
+    pub fn find_node_raw(&self, dst: NodeInfo, key: Key) -> Result<Reply> {
         self.rpc
-            .send_req(Request::FindNode(k.to_owned()), dst)
+            .send_req(Request::FindNode(key), dst)
             .map_err(|err| {
                 if let KademliaError::RequestTimeout = err {
-                    trace!("DST {} {}: Find node req timeout", dst.addr, dst.id);
+                    debug!("DST {} {}: Find node req timeout", dst.addr, dst.id);
                     self.routes.remove(&dst.id);
                 } else {
                     error!("DST {} {}: Find node req error: {}", dst.addr, dst.id, err);
@@ -238,7 +283,7 @@ impl Kademlia {
             .send_req(Request::FindValue(k.to_owned()), dst)
             .map_err(|err| {
                 if let KademliaError::RequestTimeout = err {
-                    trace!("DST {} {}: Find  value req timeout", dst.addr, dst.id);
+                    debug!("DST {} {}: Find  value req timeout", dst.addr, dst.id);
                     self.routes.remove(&dst.id);
                 } else {
                     error!("DST {} {}: Find value req error: {}", dst.addr, dst.id, err);
@@ -248,6 +293,71 @@ impl Kademlia {
             })
     }
 
+    /// Returns [None] if at least one destination didn't respond.
+    pub fn ping_slice(&self, dsts: &[NodeInfo]) -> Option<()> {
+        if dsts.is_empty() {
+            return None;
+        }
+
+        if dsts.len() == 1 {
+            if let Ok(_) = self.ping_raw(dsts[0].clone()) {
+                self.append_with_refresh_no_error(dsts[0]);
+                return Some(());
+            }
+
+            return None;
+        }
+
+        let mut successful_pings = 0;
+
+        let (jobs_sender, jobs_receiver) = mpmc::channel();
+        let (results_sender, results_receiver) = mpsc::channel();
+
+        for _ in 0..A_PARAM {
+            let jobs: Receiver<NodeInfo> = jobs_receiver.clone();
+            let results = results_sender.clone();
+            let node = self.clone();
+            thread::spawn(move || {
+                for job in jobs {
+                    trace!("ping_slice: new job: {:?}", job);
+
+                    let job = job.clone();
+
+                    results
+                        .send((job, node.ping_raw(job)))
+                        .expect("unreachable state: job receiver closed before the job sender");
+                }
+
+                drop(results)
+            });
+        }
+
+        // TODO: make parallel
+        for dst in dsts {
+            jobs_sender
+                .send(dst.clone())
+                .expect("unreachable state: job receiver closed before the job sender");
+        }
+
+        drop(jobs_sender);
+
+        for result in results_receiver {
+            trace!("ping_slice: new result: {:?}", result);
+            let (pinged_node, result) = result;
+            if let Ok(_) = result {
+                self.append_with_refresh_no_error(pinged_node);
+                successful_pings += 1;
+            }
+        }
+
+        if successful_pings != dsts.len() {
+            None
+        } else {
+            Some(())
+        }
+    }
+
+    /// Pings dst and saves it to the routing table if it is connectable.
     pub fn ping(&self, dst: NodeInfo) -> Result<()> {
         if let Err(e) = self.ping_raw(dst.clone()) {
             Err(e)
@@ -257,8 +367,8 @@ impl Kademlia {
         }
     }
 
-    /// Pings dst without trying to clean K-Bucket if there is no room for
-    /// dst insertion
+    /// Pings dst and saves it to the routing table if it is connectable.
+    /// Doesn't try to clean K-Bucket if there is no room for dst insertion
     pub fn ping_discard(&self, dst: NodeInfo) -> Result<()> {
         if let Err(e) = self.ping_raw(dst.clone()) {
             Err(e)
@@ -276,8 +386,8 @@ impl Kademlia {
         }
     }
 
-    pub fn find_node(&self, dst: NodeInfo, id: &Key) -> Result<Vec<NodeAndDistance>> {
-        match self.find_node_raw(dst.clone(), &id) {
+    pub fn find_node(&self, dst: NodeInfo, id: Key) -> Result<Vec<NodeAndDistance>> {
+        match self.find_node_raw(dst, id) {
             Err(e) => Err(e),
             Ok(reply) => {
                 self.append_with_refresh_no_error(dst);
@@ -291,147 +401,199 @@ impl Kademlia {
         }
     }
 
-    pub fn find_value(&self, dst: NodeInfo, k: &Key) -> Result<Option<FindValueResult>> {
+    pub fn find_value(&self, dst: NodeInfo, k: &Key) -> Result<FindValueResult> {
         match self.find_value_raw(dst.clone(), &k) {
             Err(e) => Err(e),
             Ok(reply) => {
                 self.append_with_refresh_no_error(dst);
 
                 if let Reply::FindValue(result) = reply {
-                    Ok(Some(result))
+                    Ok(result)
                 } else {
-                    Ok(None)
+                    Err(KademliaError::UnknownResponse)
                 }
             }
         }
     }
 
+    /// Finds at most [K_PARAM] closest nodes to the id.
+    ///
+    /// Returns [None] if there are no connectable nodes in the routing table.
     pub fn lookup_nodes(&self, id: &Key) -> Vec<NodeAndDistance> {
-        let mut queried = HashSet::new();
-        let mut nodes_distances = HashSet::new();
-
-        // Add the closest nodes we know to our queue of nodes to query
-        let mut to_query = self.routes.closest_nodes(id, K_PARAM);
-
-        for entry in &to_query {
-            queried.insert(entry.clone());
+        let closest_local_nodes = self.routes.closest_nodes(id, K_PARAM);
+        if closest_local_nodes.is_empty() {
+            return Vec::new();
         }
 
-        while !to_query.is_empty() {
-            let mut joins = Vec::new();
-            let mut queries = Vec::new();
-            let mut results = Vec::new();
-            for _ in 0..A_PARAM {
-                match to_query.pop() {
-                    Some(entry) => {
-                        queries.push(entry);
-                    }
-                    None => {
-                        break;
+        let id = id.clone();
+
+        let mut closest_nodes = Vec::with_capacity(K_PARAM + 1);
+
+        let (jobs_sender, jobs_receiver) = mpmc::channel();
+        let (results_sender, results_receiver) = mpsc::channel();
+
+        for _ in 0..A_PARAM {
+            let jobs = jobs_receiver.clone();
+            let results = results_sender.clone();
+            let node = self.clone();
+            thread::spawn(move || {
+                for job in jobs {
+                    trace!("new job: {:?}", job);
+
+                    let node_info = job;
+
+                    if let Err(e) = results.send((node_info, node.find_node(node_info, id))) {
+                        trace!("can't send lookup_node result from {}: {}", node_info, e);
                     }
                 }
-            }
+            });
+        }
 
-            let id = id.clone();
+        let mut jobs_counter = closest_local_nodes.len();
+        let mut queried_nodes = HashSet::new();
 
-            for &NodeAndDistance(ref node_info, _) in &queries {
-                let node_info = node_info.clone();
-                let node = self.clone();
-                joins.push(thread::spawn(move || node.find_node(node_info, &id)));
-            }
-            for j in joins {
-                results.push(j.join().unwrap());
-            }
+        queried_nodes.insert(self.routes.get_self_node_info());
 
-            for (res, query) in results.into_iter().zip(queries) {
-                if let Ok(entries) = res {
-                    nodes_distances.insert(query);
-                    for entry in entries {
-                        if queried.insert(entry.clone()) {
-                            to_query.push(entry);
+        for node in closest_local_nodes {
+            jobs_sender
+                .send(node.0)
+                .expect("unreachable state: job receiver closed before the job sender");
+
+            // queried_nodes.insert(node.0);
+        }
+
+        let mut insert_to_closest_nodes =
+            |node_distance: NodeAndDistance| match closest_nodes.binary_search(&node_distance) {
+                Err(pos) => {
+                    if pos <= closest_nodes.len() {
+                        closest_nodes.insert(pos, node_distance);
+
+                        if closest_nodes.len() > K_PARAM {
+                            closest_nodes.pop();
                         }
                     }
                 }
+                _ => unreachable!(),
+            };
+
+        for job_result in &results_receiver {
+            trace!("new lookup node job result: {:?}", job_result);
+            jobs_counter -= 1;
+
+            // source is used only for nodes taken from the local routing table.
+            let (source, result) = job_result;
+            match result {
+                Ok(result) => {
+                    if let None = queried_nodes.get(&source) {
+                        let source_distance =
+                            self.routes.get_self_node_info().id.distance(&source.id);
+
+                        insert_to_closest_nodes(NodeAndDistance(source, source_distance));
+                    }
+
+                    for node in result {
+                        if let None = queried_nodes.get(&node.0) {
+                            insert_to_closest_nodes(node.clone());
+
+                            jobs_counter += 1;
+
+                            jobs_sender.send(node.0).expect(
+                                "unreachable state: job receiver closed before the job sender",
+                            );
+
+                            queried_nodes.insert(node.0);
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            queried_nodes.insert(source);
+
+            if jobs_counter == 0 {
+                break;
             }
         }
 
-        let mut nodes_distances = nodes_distances.into_iter().collect::<Vec<_>>();
-        nodes_distances.sort_by(|a, b| a.1.cmp(&b.1));
-        nodes_distances.truncate(K_PARAM);
-        nodes_distances
+        closest_nodes
     }
 
-    // TODO: return only Option<String>
-    pub fn lookup_value(&self, id: &Key) -> (Option<String>, Vec<NodeAndDistance>) {
-        let mut queried = HashSet::new();
-        let mut potential_holders = HashSet::new();
-
-        // Add the closest nodes we know to our queue of nodes to query
-        let mut to_query = self.routes.closest_nodes(id, K_PARAM);
-
-        for entry in &to_query {
-            queried.insert(entry.clone());
+    pub fn lookup_value(&self, id: &Key) -> Option<String> {
+        let closest_nodes = self.routes.closest_nodes(id, K_PARAM);
+        if closest_nodes.is_empty() {
+            return None;
         }
 
-        while !to_query.is_empty() {
-            let mut joins = Vec::new();
-            let mut queries = Vec::new();
-            let mut results = Vec::new();
-            for _ in 0..A_PARAM {
-                match to_query.pop() {
-                    Some(entry) => {
-                        queries.push(entry);
-                    }
-                    None => {
-                        break;
+        let id = id.clone();
+        let (jobs_sender, jobs_receiver) = mpmc::channel();
+        let (results_sender, results_receiver) = mpsc::channel();
+
+        for _ in 0..A_PARAM {
+            let jobs = jobs_receiver.clone();
+            let results = results_sender.clone();
+            let node = self.clone();
+            thread::spawn(move || {
+                for job in jobs {
+                    trace!("new job: {:?}", job);
+
+                    let node_info = job;
+
+                    if let Err(e) = results.send(node.find_value(node_info, &id)) {
+                        trace!("can't send lookup_value result from {}: {}", node_info, e);
                     }
                 }
-            }
+            });
+        }
 
-            let id = id.clone();
+        let mut jobs_counter = closest_nodes.len();
+        let mut queried_nodes = HashSet::new();
 
-            for &NodeAndDistance(ref ni, _) in &queries {
-                let node_info = ni.clone();
-                let node = self.clone();
-                joins.push(thread::spawn(move || {
-                    node.find_value(node_info.clone(), &id)
-                }));
-            }
-            for j in joins {
-                results.push(j.join().unwrap());
-            }
-            for (res, query) in results.into_iter().zip(queries) {
-                if let Ok(fvres) = res {
-                    if let Some(fvres) = fvres {
-                        match fvres {
-                            FindValueResult::Nodes(entries) => {
-                                potential_holders.insert(query);
-                                for entry in entries {
-                                    if queried.insert(entry.clone()) {
-                                        to_query.push(entry);
-                                    }
-                                }
-                            }
-                            FindValueResult::Value(val) => {
-                                let mut potential_holders =
-                                    potential_holders.into_iter().collect::<Vec<_>>();
-                                potential_holders.sort_by(|a, b| a.1.cmp(&b.1));
-                                potential_holders.truncate(K_PARAM);
-                                return (Some(val), potential_holders);
+        queried_nodes.insert(self.routes.get_self_node_info());
+
+        for node in closest_nodes {
+            jobs_sender
+                .send(node.0)
+                .expect("unreachable state: job receiver closed before the job sender");
+
+            queried_nodes.insert(node.0);
+        }
+
+        for job_result in &results_receiver {
+            trace!("new job result: {:?}", job_result);
+            jobs_counter -= 1;
+            match job_result {
+                Ok(result) => match result {
+                    FindValueResult::Nodes(nodes) => {
+                        for node in nodes {
+                            if let None = queried_nodes.get(&node.0) {
+                                jobs_counter += 1;
+
+                                jobs_sender.send(node.0.clone()).expect(
+                                    "unreachable state: job receiver closed before the job sender",
+                                );
+                                queried_nodes.insert(node.0.clone());
                             }
                         }
                     }
-                }
+                    FindValueResult::Value(value) => {
+                        return Some(value);
+                    }
+                },
+                _ => {}
+            }
+
+            if jobs_counter == 0 {
+                break;
             }
         }
 
-        (None, vec![])
+        None
     }
 
     pub fn put(&self, v: &str) {
         let k = Key::hash(v.as_bytes());
         info!("key: {}", k);
-        let candidates = self.lookup_nodes(&k);
+        let candidates = self.routes.closest_nodes(&k, K_PARAM);
 
         if candidates.len() < K_PARAM {
             self.store
@@ -454,20 +616,17 @@ impl Kademlia {
             return Some(v.to_owned());
         }
 
-        // TODO: Store the value in nodes from closest bucket to the k
-        let (v_opt, mut nodes) = self.lookup_value(k);
-        v_opt.map(|v| {
-            if let Some(NodeAndDistance(store_target, _)) = nodes.pop() {
-                if let Err(e) = self.store(store_target, &v) {
+        let value = self.lookup_value(k);
+        value.map(|v| {
+            if let Some(closest_node) = self.routes.closest_nodes(k, 1).pop() {
+                if let Err(e) = self.store(closest_node.0.clone(), &v) {
                     warn!(
                         "Can't store value {} in node {} {}: {}",
-                        k, store_target.addr, store_target.id, e
+                        k, closest_node.0.addr, closest_node.0.id, e
                     );
-                    self.store.lock().unwrap().insert(k.clone(), v.clone());
                 }
-            } else {
-                self.store.lock().unwrap().insert(k.clone(), v.clone());
             }
+            self.store.lock().unwrap().insert(k.clone(), v.clone());
             v
         })
     }
@@ -478,10 +637,7 @@ impl Kademlia {
         if let Err(update_err) = self.routes.update(node_info) {
             for node in update_err.nodes {
                 if let Err(ping_err) = self.ping_discard(node) {
-                    match ping_err {
-                        KademliaError::RequestTimeout => break,
-                        _ => return Err(ping_err),
-                    }
+                    return Err(ping_err);
                 }
             }
 
@@ -494,10 +650,7 @@ impl Kademlia {
 
     fn append_with_refresh_no_error(&self, node_info: NodeInfo) {
         if let Err(e) = self.append_with_refresh(node_info) {
-            warn!(
-                "{} {}: Can't update routing table: {}",
-                node_info.addr, node_info.id, e
-            )
+            warn!("{}: Can't update routing table: {}", node_info.addr, e)
         }
     }
 

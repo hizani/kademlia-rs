@@ -2,6 +2,7 @@ use const_hex::{FromHex, ToHexExt};
 use hashes::sha2::sha256;
 use serde::{Deserialize, Serialize};
 use std::{
+    cmp::Ordering,
     fmt::{Debug, Display, Error, Formatter},
     str::FromStr,
 };
@@ -90,7 +91,7 @@ impl FromHex for Key {
     }
 }
 
-#[derive(Hash, Ord, PartialOrd, Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
+#[derive(Hash, PartialOrd, Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
 pub struct Distance([u8; KEY_LEN]);
 
 impl Distance {
@@ -114,6 +115,11 @@ impl Distance {
 
     #[cfg(target_endian = "little")]
     pub fn zeroes_in_prefix(&self) -> usize {
+        let a = [0u8];
+        let b = [1u8];
+
+        if a[..] < b[..] {}
+
         let mut zeroes_count = 0;
 
         for n in self.0 {
@@ -128,6 +134,20 @@ impl Distance {
         }
 
         zeroes_count
+    }
+}
+
+impl Ord for Distance {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        for (x, y) in self.0.iter().zip(other.0.iter()) {
+            match x.cmp(y) {
+                Ordering::Equal => continue,
+                Ordering::Greater => return Ordering::Greater,
+                Ordering::Less => return Ordering::Less,
+            }
+        }
+
+        Ordering::Equal
     }
 }
 

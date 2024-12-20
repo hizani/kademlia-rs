@@ -1,6 +1,8 @@
+use const_hex::FromHex;
+use core::str;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, net::SocketAddr, sync::Mutex};
+use std::{cmp::Ordering, fmt::Display, net::SocketAddr, str::FromStr, sync::Mutex};
 
 use crate::{
     key::{Distance, Key},
@@ -8,17 +10,57 @@ use crate::{
 };
 
 #[derive(Debug, thiserror::Error)]
-#[error("kbucket {} is full", bucket_n)]
+#[error("kbucket {bucket_n} is full")]
 pub struct ErrBucketIsFull {
     pub nodes: Vec<NodeInfo>,
     pub bucket_n: usize,
     pub node_info: NodeInfo,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct ParseNodeInfoError(String);
+
 #[derive(Hash, Eq, PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct NodeInfo {
     pub id: Key,
     pub addr: SocketAddr,
+}
+
+impl TryFrom<&[u8]> for NodeInfo {
+    type Error = ParseNodeInfoError;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        NodeInfo::from_str(
+            str::from_utf8(value).or_else(|e| Err(ParseNodeInfoError(e.to_string())))?,
+        )
+    }
+}
+
+impl FromStr for NodeInfo {
+    type Err = ParseNodeInfoError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut split = s.split_whitespace();
+        let socket_str = split
+            .next()
+            .ok_or(ParseNodeInfoError("string is empty".to_owned()))?;
+        let key_str = split
+            .next()
+            .ok_or(ParseNodeInfoError("node key is not specified".to_owned()))?;
+
+        Ok(NodeInfo {
+            addr: SocketAddr::from_str(socket_str)
+                .or_else(|e| Err(ParseNodeInfoError(e.to_string())))?,
+            id: Key::from_hex(key_str).or_else(|e| Err(ParseNodeInfoError(e.to_string())))?,
+        })
+    }
+}
+
+impl Display for NodeInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.addr, self.id)
+    }
 }
 
 #[derive(Debug)]
@@ -173,6 +215,10 @@ impl RoutingTable {
                 warn!("Tried to remove routing entry that doesn't exist.");
             }
         }
+    }
+
+    pub fn get_self_node_info(&self) -> NodeInfo {
+        self.node_info
     }
 
     #[inline]

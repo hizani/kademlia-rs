@@ -1,4 +1,5 @@
 #![cfg_attr(feature = "simd-unstable", feature(portable_simd))]
+#![feature(mpmc_channel)]
 
 mod kademlia;
 mod key;
