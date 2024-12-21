@@ -183,6 +183,12 @@ impl KademliaBuilder {
     }
 }
 
+/// Alias to [Kademlia::start]
+#[inline]
+pub async fn start() -> std::result::Result<Kademlia, KademliaStartError> {
+    Kademlia::start().await
+}
+
 // TODO: Implement graceful shutdown (Pass CancellationToken to each function?)
 impl Kademlia {
     pub async fn start() -> std::result::Result<Self, KademliaStartError> {

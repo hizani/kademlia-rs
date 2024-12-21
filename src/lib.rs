@@ -5,6 +5,7 @@ mod key;
 mod routing;
 mod rpc;
 
+pub use kademlia::start;
 pub use kademlia::Kademlia;
 pub use key::Key;
 pub use routing::NodeInfo;
