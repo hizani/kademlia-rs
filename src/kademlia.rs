@@ -394,6 +394,7 @@ impl Kademlia {
                 if let Reply::FindNode(nodes) = reply {
                     Ok(nodes)
                 } else {
+                    warn!("wrong successful reply: {:#?}", reply);
                     Ok(vec![])
                 }
             }
@@ -409,6 +410,7 @@ impl Kademlia {
                 if let Reply::FindValue(result) = reply {
                     Ok(result)
                 } else {
+                    warn!("wrong successful reply: {:#?}", reply);
                     Err(KademliaError::UnknownResponse)
                 }
             }
