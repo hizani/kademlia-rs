@@ -20,7 +20,10 @@ lv <string key>      ..performs iterative value lookup
 
 #[tokio::main]
 async fn main() {
-    let subscriber = tracing_subscriber::fmt().with_target(false).finish();
+    let subscriber = tracing_subscriber::fmt()
+        .with_target(false)
+        .with_max_level(tracing::Level::INFO)
+        .finish();
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
     let input = io::stdin();
