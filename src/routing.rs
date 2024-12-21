@@ -1,8 +1,9 @@
 use const_hex::FromHex;
 use core::str;
-use log::{info, warn};
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, fmt::Display, net::SocketAddr, str::FromStr, sync::Mutex};
+use std::{cmp::Ordering, fmt::Display, net::SocketAddr, str::FromStr};
+use tokio::sync::Mutex;
+use tracing::{info, warn};
 
 use crate::{
     key::{Distance, Key},
@@ -114,9 +115,9 @@ impl RoutingTable {
     }
 
     /// Update the appropriate bucket with the new node's info
-    pub fn update(&self, node_info: NodeInfo) -> Result<(), ErrBucketIsFull> {
+    pub async fn update(&self, node_info: NodeInfo) -> Result<(), ErrBucketIsFull> {
         if let Some((bucket, bucket_n)) = self.get_bucket_by_key(&node_info.id) {
-            let mut nodes = bucket.nodes.lock().unwrap();
+            let mut nodes = bucket.nodes.lock().await;
 
             let node_index = nodes.iter().position(|x| x.id == node_info.id);
             match node_index {
@@ -142,7 +143,7 @@ impl RoutingTable {
     }
 
     /// Lookup the nodes closest to item in this table
-    pub fn closest_nodes(&self, item: &Key, count: usize) -> Vec<NodeAndDistance> {
+    pub async fn closest_nodes(&self, item: &Key, count: usize) -> Vec<NodeAndDistance> {
         if count == 0 {
             return Vec::new();
         }
@@ -164,7 +165,7 @@ impl RoutingTable {
             closest_bucket
                 .nodes
                 .lock()
-                .unwrap()
+                .await
                 .iter()
                 .map(|node_info| NodeAndDistance(node_info.clone(), node_info.id.distance(item))),
         );
@@ -188,13 +189,13 @@ impl RoutingTable {
             }
 
             if let Some(left_bucket) = check_buckets.0 {
-                closest_nodes.extend(left_bucket.nodes.lock().unwrap().iter().map(|node_info| {
+                closest_nodes.extend(left_bucket.nodes.lock().await.iter().map(|node_info| {
                     NodeAndDistance(node_info.clone(), node_info.id.distance(item))
                 }));
             }
 
             if let Some(right_bucket) = check_buckets.1 {
-                closest_nodes.extend(right_bucket.nodes.lock().unwrap().iter().map(|node_info| {
+                closest_nodes.extend(right_bucket.nodes.lock().await.iter().map(|node_info| {
                     NodeAndDistance(node_info.clone(), node_info.id.distance(item))
                 }));
             }
@@ -205,9 +206,9 @@ impl RoutingTable {
         closest_nodes
     }
 
-    pub fn remove(&self, key: &Key) {
+    pub async fn remove(&self, key: &Key) {
         if let Some((bucket, _)) = self.get_bucket_by_key(key) {
-            let mut nodes = bucket.nodes.lock().unwrap();
+            let mut nodes = bucket.nodes.lock().await;
 
             if let Some(item_index) = nodes.iter().position(|x| &x.id == key) {
                 nodes.remove(item_index);

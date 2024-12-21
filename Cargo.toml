@@ -9,14 +9,21 @@ edition = "2021"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = "1"                                  # TODO: use a homebrewed encrypted binary protocol instead of json 
 rand = "0.8"
 hashes = "0.1"
-const-hex = "1"
-log = "0.4"
-env_logger = "0.11"
-thiserror = "2"
+const-hex = "1.14"
+thiserror = "2.0"
+tokio = { version = "1.42", features = ["full"] }
+async-channel = "2.3"
+tracing = "0.1"
+
+[dev-dependencies]
+tracing-subscriber = "0.3"
 
 [features]
-default = []
 simd-unstable = []
+
+
+[[example]]
+name = "node"

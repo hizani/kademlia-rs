@@ -1,12 +1,13 @@
-use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::SocketAddr;
 use std::str;
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+use std::sync::Arc;
+use tokio::net::UdpSocket;
+use tokio::sync::mpsc::Sender;
+use tokio::sync::Mutex;
+use tokio::time::Duration;
+use tracing::{debug, error, info, warn};
 
 use crate::kademlia::{KademliaError, Result};
 use crate::{
@@ -44,7 +45,7 @@ impl ReqHandle {
     pub fn get_src(&self) -> &NodeInfo {
         &self.src
     }
-    pub fn reply(self, rep: Reply) -> Result<()> {
+    pub async fn reply(self, rep: Reply) -> Result<()> {
         let rep_rmsg = RpcMessage {
             token: self.token,
             src: self.rpc.node_info,
@@ -52,20 +53,20 @@ impl ReqHandle {
             msg: Message::Reply(rep),
         };
 
-        self.rpc.send_msg(&rep_rmsg, self.src.addr)
+        self.rpc.send_msg(&rep_rmsg, self.src.addr).await
     }
 }
 
 #[derive(Clone)]
 pub(crate) struct Rpc {
     socket: Arc<UdpSocket>,
-    pending: Arc<Mutex<HashMap<Key, mpsc::Sender<Option<Reply>>>>>,
+    pending: Arc<Mutex<HashMap<Key, tokio::sync::oneshot::Sender<Reply>>>>,
     node_info: NodeInfo,
 }
 
 impl Rpc {
     /// Initializes and runs RPC service
-    pub fn new(socket: UdpSocket, tx: mpsc::Sender<ReqHandle>, node_info: NodeInfo) -> Rpc {
+    pub fn new(socket: UdpSocket, tx: Sender<ReqHandle>, node_info: NodeInfo) -> Rpc {
         let rpc = Rpc {
             socket: Arc::new(socket),
             pending: Arc::new(Mutex::new(HashMap::new())),
@@ -73,10 +74,10 @@ impl Rpc {
         };
 
         let rpc_clone = rpc.clone();
-        thread::spawn(move || {
+        tokio::spawn(async move {
             let mut buf = [0u8; MESSAGE_LEN];
             loop {
-                let (len, src_addr) = match rpc.socket.recv_from(&mut buf) {
+                let (len, src_addr) = match rpc.socket.recv_from(&mut buf).await {
                     Ok(node_info) => node_info,
                     Err(err) => {
                         error!("Failed to receive datagram from a socket: {}", err);
@@ -111,13 +112,13 @@ impl Rpc {
                             req: req,
                             rpc: rpc.clone(),
                         };
-                        if let Err(_) = tx.send(req_handle) {
+                        if let Err(_) = tx.send(req_handle).await {
                             info!("Closing channel, since receiver is dead.");
                             break;
                         }
                     }
                     Message::Reply(rep) => {
-                        rpc.clone().handle_rep(rmsg.token, rep);
+                        rpc.clone().handle_rep(rmsg.token, rep).await;
                     }
                 }
             }
@@ -127,40 +128,36 @@ impl Rpc {
     }
 
     /// Passes a reply received through the Rpc socket to the appropriate pending Receiver
-    fn handle_rep(self, token: Key, rep: Reply) {
-        thread::spawn(move || {
-            let mut pending = self.pending.lock().unwrap();
-            let send_res = match pending.get(&token) {
-                Some(tx) => tx.send(Some(rep)),
+    async fn handle_rep(self, token: Key, rep: Reply) {
+        tokio::spawn(async move {
+            match self.pending.lock().await.remove(&token) {
+                Some(tx) => _ = tx.send(rep),
                 None => {
                     warn!("Unsolicited reply received, ignoring.");
                     return;
                 }
             };
-            if let Ok(_) = send_res {
-                pending.remove(&token);
-            }
         });
     }
 
     /// Sends a message
-    fn send_msg(&self, rmsg: &RpcMessage, addr: SocketAddr) -> Result<()> {
+    async fn send_msg(&self, rmsg: &RpcMessage, addr: SocketAddr) -> Result<()> {
         let enc_msg =
             serde_json::to_vec(rmsg).or_else(|e| Err(KademliaError::CantSerializeMsg(e)))?;
-        self.socket.send_to(&enc_msg, addr)?;
+        self.socket.send_to(&enc_msg, addr).await?;
         debug!("| OUT | {:?} ==> {:?} ", rmsg.msg, rmsg.dst.id);
         Ok(())
     }
 
     /// Sends a request of data from src_info to dst_info
-    pub fn send_req(&self, req: Request, dst: NodeInfo) -> Result<Reply> {
-        let (tx, rx) = mpsc::channel();
-        let mut pending = self.pending.lock().unwrap();
+    pub async fn send_req(&self, req: Request, dst: NodeInfo) -> Result<Reply> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut pending = self.pending.lock().await;
         let mut token = Key::random();
         while pending.contains_key(&token) {
             token = Key::random();
         }
-        pending.insert(token.to_owned(), tx.clone());
+        pending.insert(token.to_owned(), tx);
         drop(pending);
 
         let rmsg = RpcMessage {
@@ -169,23 +166,16 @@ impl Rpc {
             dst: dst,
             msg: Message::Request(req),
         };
-        self.send_msg(&rmsg, rmsg.dst.addr)?;
+        self.send_msg(&rmsg, rmsg.dst.addr).await?;
 
         let rpc = self.clone();
-        thread::spawn(move || {
-            thread::sleep(Duration::from_millis(TIMEOUT));
-            if let Ok(_) = tx.send(None) {
-                let mut pending = rpc.pending.lock().unwrap();
-                pending.remove(&token);
-            }
-        });
 
-        match rx
-            .recv()
-            .expect("impossible state: response sender closed before response resierver")
-        {
-            Some(resp) => Ok(resp),
-            None => Err(KademliaError::RequestTimeout),
+        match tokio::time::timeout(Duration::from_millis(TIMEOUT), rx).await {
+            Ok(resp) => Ok(resp.unwrap()),
+            Err(_) => {
+                rpc.pending.lock().await.remove(&token);
+                Err(KademliaError::RequestTimeout)
+            }
         }
     }
 }
