@@ -332,7 +332,6 @@ impl Kademlia {
             });
         }
 
-        // TODO: make parallel
         for dst in dsts {
             jobs_sender
                 .send(dst.clone())
