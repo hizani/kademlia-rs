@@ -5,6 +5,9 @@ mod key;
 mod routing;
 mod rpc;
 
+// TODO: add comments at least for public functions.
+// TODO: use a homebrewed encrypted binary protocol instead of json.
+
 pub use kademlia::start;
 pub use kademlia::Kademlia;
 pub use key::Key;

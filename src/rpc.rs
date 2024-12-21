@@ -75,6 +75,7 @@ impl Rpc {
 
         let rpc_clone = rpc.clone();
         tokio::spawn(async move {
+            // TODO: add streaming instead of expecting the whole message to be in a single datagram
             let mut buf = [0u8; MESSAGE_LEN];
             loop {
                 let (len, src_addr) = match rpc.socket.recv_from(&mut buf).await {
