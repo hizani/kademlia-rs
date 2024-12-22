@@ -22,7 +22,7 @@ lv <string key>      ..performs iterative value lookup
 async fn main() {
     let subscriber = tracing_subscriber::fmt()
         .with_target(false)
-        .with_max_level(tracing::Level::INFO)
+        .with_max_level(tracing::Level::TRACE)
         .finish();
     tracing::subscriber::set_global_default(subscriber).unwrap();
 

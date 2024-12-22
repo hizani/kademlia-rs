@@ -3,7 +3,7 @@ use core::str;
 use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, fmt::Display, net::SocketAddr, str::FromStr};
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{info, trace, warn};
 
 use crate::{
     key::{Distance, Key},
@@ -100,12 +100,19 @@ impl Ord for NodeAndDistance {
 impl RoutingTable {
     pub fn new(node_info: NodeInfo) -> RoutingTable {
         let mut buckets = Vec::with_capacity(N_BUCKETS);
-        for bucket_n in (1..=N_BUCKETS).rev() {
-            let max_size = bucket_n.min(K_PARAM);
+        for bucket_n in (0..N_BUCKETS).rev() {
+            let max_size = if let Some(possible_bucket_len) = 2_usize.checked_pow(bucket_n as u32) {
+                possible_bucket_len.min(K_PARAM)
+            } else {
+                K_PARAM
+            };
+
             buckets.push(Kbucket {
                 nodes: Mutex::new(Vec::with_capacity(max_size)),
                 max_size,
             });
+
+            trace!("create bucket {bucket_n} with size = {max_size}")
         }
         let routing_rable = RoutingTable {
             buckets,
