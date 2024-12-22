@@ -122,8 +122,9 @@ impl RoutingTable {
     }
 
     /// Update the appropriate bucket with the new node's info
-    pub async fn update(&self, node_info: NodeInfo) -> Result<(), ErrBucketIsFull> {
+    pub async fn update(&self, node_info: NodeInfo, evict: bool) -> Result<(), ErrBucketIsFull> {
         if let Some((bucket, bucket_n)) = self.get_bucket_by_key(&node_info.id) {
+            // TODO: Extract bucket logic to the impl Kbucket
             let mut nodes = bucket.nodes.lock().await;
 
             let node_index = nodes.iter().position(|x| x.id == node_info.id);
@@ -136,11 +137,26 @@ impl RoutingTable {
                     if nodes.len() < bucket.max_size {
                         nodes.push(node_info);
                     } else {
-                        return Err(ErrBucketIsFull {
-                            bucket_n,
-                            node_info,
-                            nodes: nodes.clone(),
-                        });
+                        let evict_index = if evict {
+                            let distance = self.node_info.id.distance(&node_info.id);
+                            nodes
+                                .iter()
+                                .position(|x| distance < self.node_info.id.distance(&x.id))
+                        } else {
+                            None
+                        };
+
+                        if let Some(evict_index) = evict_index {
+                            let temp = nodes.remove(evict_index);
+                            nodes.push(temp);
+                            return Ok(());
+                        } else {
+                            return Err(ErrBucketIsFull {
+                                bucket_n,
+                                node_info,
+                                nodes: nodes.clone(),
+                            });
+                        }
                     }
                 }
             }

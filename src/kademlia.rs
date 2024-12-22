@@ -389,13 +389,15 @@ impl Kademlia {
         }
     }
 
+    // TODO: remove this function and add discard: bool parameter to the ping fn
+    //
     /// Pings dst and saves it to the routing table if it is connectable.
     /// Doesn't try to clean K-Bucket if there is no room for dst insertion
     pub async fn ping_discard(&self, dst: NodeInfo) -> Result<()> {
         if let Err(e) = self.ping_raw(dst.clone()).await {
             Err(e)
         } else {
-            _ = self.routes.update(dst);
+            _ = self.routes.update(dst, true);
             Ok(())
         }
     }
@@ -656,7 +658,7 @@ impl Kademlia {
     /// Appends a node into the routing table and evicts non-responsive nodes
     /// from the bucket if there is no room for it.
     pub async fn append_with_refresh(&self, node_info: NodeInfo) -> Result<()> {
-        if let Err(update_err) = self.routes.update(node_info).await {
+        if let Err(update_err) = self.routes.update(node_info, true).await {
             for node in update_err.nodes {
                 if let Err(ping_err) = self.ping_discard(node).await {
                     return Err(ping_err);
@@ -664,7 +666,7 @@ impl Kademlia {
             }
 
             // discard dst if there is still no room after pinging whole K-Bucket
-            _ = self.routes.update(update_err.node_info);
+            _ = self.routes.update(update_err.node_info, true);
         }
 
         Ok(())
