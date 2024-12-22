@@ -115,11 +115,6 @@ impl Distance {
 
     #[cfg(target_endian = "little")]
     pub fn zeroes_in_prefix(&self) -> usize {
-        let a = [0u8];
-        let b = [1u8];
-
-        if a[..] < b[..] {}
-
         let mut zeroes_count = 0;
 
         for n in self.0 {
