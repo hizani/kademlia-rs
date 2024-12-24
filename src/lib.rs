@@ -10,7 +10,7 @@ mod rpc;
 
 pub use kademlia::start;
 pub use kademlia::Kademlia;
-pub use key::Key;
+pub use key::DHTKey;
 pub use routing::NodeInfo;
 
 /// Length of key in bytes

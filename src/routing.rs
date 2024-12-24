@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 use tracing::{info, trace, warn};
 
 use crate::{
-    key::{Distance, Key},
+    key::{DHTKey, Distance},
     K_PARAM, N_BUCKETS,
 };
 
@@ -24,7 +24,7 @@ pub struct ParseNodeInfoError(String);
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct NodeInfo {
-    pub id: Key,
+    pub id: DHTKey,
     pub addr: SocketAddr,
 }
 
@@ -53,7 +53,7 @@ impl FromStr for NodeInfo {
         Ok(NodeInfo {
             addr: SocketAddr::from_str(socket_str)
                 .or_else(|e| Err(ParseNodeInfoError(e.to_string())))?,
-            id: Key::from_hex(key_str).or_else(|e| Err(ParseNodeInfoError(e.to_string())))?,
+            id: DHTKey::from_hex(key_str).or_else(|e| Err(ParseNodeInfoError(e.to_string())))?,
         })
     }
 }
@@ -72,7 +72,7 @@ struct Kbucket {
 
 #[derive(Debug)]
 pub struct RoutingTable {
-    node_info: NodeInfo,
+    local_key: DHTKey,
     buckets: Vec<Kbucket>,
 }
 
@@ -98,7 +98,7 @@ impl Ord for NodeAndDistance {
 }
 
 impl RoutingTable {
-    pub fn new(node_info: NodeInfo) -> RoutingTable {
+    pub fn new(local_key: DHTKey) -> RoutingTable {
         let mut buckets = Vec::with_capacity(N_BUCKETS);
         for bucket_n in (0..N_BUCKETS).rev() {
             let max_size = if let Some(possible_bucket_len) = 2_usize.checked_pow(bucket_n as u32) {
@@ -114,10 +114,7 @@ impl RoutingTable {
 
             trace!("create bucket {bucket_n} with size = {max_size}")
         }
-        let routing_rable = RoutingTable {
-            buckets,
-            node_info: node_info.clone(),
-        };
+        let routing_rable = RoutingTable { buckets, local_key };
         routing_rable
     }
 
@@ -138,10 +135,10 @@ impl RoutingTable {
                         nodes.push(node_info);
                     } else {
                         let evict_index = if evict {
-                            let distance = self.node_info.id.distance(&node_info.id);
+                            let distance = self.local_key.distance(&node_info.id);
                             nodes
                                 .iter()
-                                .position(|x| distance < self.node_info.id.distance(&x.id))
+                                .position(|x| distance < self.local_key.distance(&x.id))
                         } else {
                             None
                         };
@@ -166,7 +163,7 @@ impl RoutingTable {
     }
 
     /// Lookup the nodes closest to item in this table
-    pub async fn closest_nodes(&self, item: &Key, count: usize) -> Vec<NodeAndDistance> {
+    pub async fn closest_nodes(&self, item: &DHTKey, count: usize) -> Vec<NodeAndDistance> {
         if count == 0 {
             return Vec::new();
         }
@@ -229,7 +226,7 @@ impl RoutingTable {
         closest_nodes
     }
 
-    pub async fn remove(&self, key: &Key) {
+    pub async fn remove(&self, key: &DHTKey) {
         if let Some((bucket, _)) = self.get_bucket_by_key(key) {
             let mut nodes = bucket.nodes.lock().await;
 
@@ -241,13 +238,9 @@ impl RoutingTable {
         }
     }
 
-    pub fn get_self_node_info(&self) -> NodeInfo {
-        self.node_info
-    }
-
     #[inline]
-    fn get_bucket_by_key<'a>(&'a self, key: &Key) -> Option<(&'a Kbucket, usize)> {
-        let index = self.lookup_bucket_index(self.node_info.id.distance(key));
+    fn get_bucket_by_key<'a>(&'a self, key: &DHTKey) -> Option<(&'a Kbucket, usize)> {
+        let index = self.lookup_bucket_index(self.local_key.distance(key));
         self.buckets.get(index).zip(Some(index))
     }
 

@@ -13,23 +13,27 @@ use std::simd;
 use crate::KEY_LEN;
 
 #[derive(Hash, Ord, PartialOrd, Eq, PartialEq, Clone, Copy, Deserialize, Serialize)]
-pub struct Key([u8; KEY_LEN]);
+pub struct DHTKey([u8; KEY_LEN]);
 
-impl Key {
+impl DHTKey {
     /// Initializes [Key] with a random, [KEY_LEN] long array.
-    pub fn random() -> Key {
-        Key(rand::random())
+    pub fn random() -> DHTKey {
+        DHTKey(rand::random())
     }
 
     /// Returns the hashed [Key] of data.
-    pub fn hash(data: &[u8]) -> Key {
+    pub fn hash(data: &[u8]) -> DHTKey {
         let hash = sha256::hash(data);
-        Key(hash.into_bytes())
+        DHTKey(hash.into_bytes())
+    }
+
+    pub fn as_array(&self) -> &[u8; KEY_LEN] {
+        &self.0
     }
 
     /// XORs two Keys.
     #[cfg(not(feature = "simd-unstable"))]
-    pub fn distance(&self, y: &Key) -> Distance {
+    pub fn distance(&self, y: &DHTKey) -> Distance {
         let mut result = [0; KEY_LEN];
         for i in 0usize..KEY_LEN {
             result[i] = self.0[i] ^ y.0[i];
@@ -40,7 +44,7 @@ impl Key {
 
     /// XORs two Keys.
     #[cfg(feature = "simd-unstable")]
-    pub fn distance(&self, y: &Key) -> Distance {
+    pub fn distance(&self, y: &DHTKey) -> Distance {
         let simd1 = simd::Simd::<u8, 32>::from_array(self.0);
         let simd2 = simd::Simd::<u8, 32>::from_array(y.0);
 
@@ -50,44 +54,44 @@ impl Key {
     }
 }
 
-impl From<[u8; KEY_LEN]> for Key {
+impl From<[u8; KEY_LEN]> for DHTKey {
     fn from(value: [u8; KEY_LEN]) -> Self {
-        Key(value)
+        DHTKey(value)
     }
 }
 
-impl Display for Key {
+impl Display for DHTKey {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.encode_hex_upper())
     }
 }
 
-impl Debug for Key {
+impl Debug for DHTKey {
     fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
         write!(f, "{}", self.encode_hex_with_prefix())
     }
 }
 
-impl FromStr for Key {
+impl FromStr for DHTKey {
     type Err = const_hex::FromHexError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Key::from_hex(s)
+        DHTKey::from_hex(s)
     }
 }
 
-impl AsRef<[u8]> for Key {
+impl AsRef<[u8]> for DHTKey {
     fn as_ref(&self) -> &[u8] {
         &self.0
     }
 }
 
-impl FromHex for Key {
+impl FromHex for DHTKey {
     type Error = const_hex::FromHexError;
 
     fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
         let mut key = [0u8; KEY_LEN];
         const_hex::decode_to_slice(hex, &mut key)?;
-        Ok(Key(key))
+        Ok(DHTKey(key))
     }
 }
 

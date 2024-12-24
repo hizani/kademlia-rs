@@ -1,28 +1,30 @@
 use async_channel as mpmc;
+use dryoc::dryocbox::KeyPair;
+use dryoc::types::ByteArray;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::io::{self, Read};
+use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::routing::ParseNodeInfoError;
+use crate::rpc::{InitRpcError, SendMsgError};
 use crate::KEY_LEN;
 use crate::{
     routing::{NodeAndDistance, NodeInfo, RoutingTable},
     rpc::{ReqHandle, Rpc},
-    Key, A_PARAM, K_PARAM,
+    DHTKey, A_PARAM, K_PARAM,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Request {
     Ping,
-    Store(Key, String),
-    FindNode(Key),
-    FindValue(Key),
+    Store(DHTKey, String),
+    FindNode(DHTKey),
+    FindValue(DHTKey),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -44,45 +46,44 @@ pub struct KademliaBuilder {
     bootstrap_nodes: Option<Vec<NodeInfo>>,
     address: Option<IpAddr>,
     port: u16,
-    key: Option<Key>,
+    key_pair: Option<KeyPair>,
 }
 
 #[derive(Clone)]
 pub struct Kademlia {
     routes: Arc<RoutingTable>,
-    store: Arc<Mutex<HashMap<Key, String>>>,
+    store: Arc<Mutex<HashMap<DHTKey, String>>>,
     rpc: Arc<Rpc>,
+    local_node_info: NodeInfo,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum KademliaStartError {
     #[error("can't bind udp socket: {}", 0)]
-    CantBindUdpSocket(io::Error),
+    CandInitRpc(#[from] InitRpcError),
     #[error(transparent)]
     CantBootstrap(#[from] ParseNodeInfoError),
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum KademliaError {
+pub enum RequestError {
     #[error("request has timed out")]
     RequestTimeout,
     #[error("received unknown reply")]
     UnknownResponse,
-    #[error("can't serialize message: {}", 0)]
-    CantSerializeMsg(serde_json::Error),
     #[error(transparent)]
-    IoError(#[from] io::Error),
+    CantSendMsg(#[from] SendMsgError),
 }
 
-pub type Result<T> = core::result::Result<T, KademliaError>;
+pub type Result<T> = core::result::Result<T, RequestError>;
 
 impl KademliaBuilder {
     pub fn new() -> Self {
         KademliaBuilder::default()
     }
 
-    pub fn key<'a>(&'a mut self, key: Key) -> &'a mut Self {
-        self.key = Some(key);
+    pub fn key<'a>(&'a mut self, key: KeyPair) -> &'a mut Self {
+        self.key_pair = Some(key);
         self
     }
 
@@ -145,36 +146,33 @@ impl KademliaBuilder {
             IpAddr::V4(Ipv4Addr::from_bits(0))
         };
 
-        let key = if let Some(key) = self.key {
-            key
+        let key_pair = if let Some(pair) = &self.key_pair {
+            pair.clone()
         } else {
-            Key::random()
+            KeyPair::gen()
         };
 
-        let socket = UdpSocket::bind(SocketAddr::new(address, self.port))
-            .await
-            .or_else(|err| Err(KademliaStartError::CantBindUdpSocket(err)))?;
-
-        let node_info = NodeInfo {
-            addr: socket
-                .local_addr()
-                .or_else(|err| Err(KademliaStartError::CantBindUdpSocket(err)))?,
-            id: key,
-        };
+        let local_key = DHTKey::from(key_pair.public_key.as_array().clone());
 
         let (req_tx, req_rx) = tokio::sync::mpsc::channel(1024);
-        let rpc = Rpc::new(socket, req_tx, node_info);
+        let rpc = Rpc::new(SocketAddr::new(address, self.port), req_tx, key_pair).await?;
+
+        let rpc_address = rpc.get_address().unwrap();
+
+        info!("new node created {} {}", local_key, rpc_address);
 
         let node = Kademlia {
-            routes: Arc::new(RoutingTable::new(node_info.clone())),
+            routes: Arc::new(RoutingTable::new(local_key.clone())),
             store: Arc::new(Mutex::new(HashMap::new())),
             rpc: Arc::new(rpc),
+            local_node_info: NodeInfo {
+                id: local_key.clone(),
+                addr: rpc_address,
+            },
         };
 
-        info!("new node created {} {}", &node_info.addr, &node_info.id);
-
-        if let Some(bootstrap_nodes) = &mut self.bootstrap_nodes {
-            node.ping_slice(&bootstrap_nodes).await;
+        if let Some(bootstrap_nodes) = &self.bootstrap_nodes {
+            node.ping_slice(bootstrap_nodes).await;
         }
 
         node.clone().start_req_handler(req_rx);
@@ -244,7 +242,7 @@ impl Kademlia {
     pub async fn ping_raw(&self, dst: NodeInfo) -> Result<Reply> {
         match self.rpc.send_req(Request::Ping, dst).await {
             Err(err) => {
-                if let KademliaError::RequestTimeout = err {
+                if let RequestError::RequestTimeout = err {
                     debug!("DST {} {}: Ping req timeout", dst.addr, dst.id);
                     self.routes.remove(&dst.id).await;
                 } else {
@@ -258,7 +256,7 @@ impl Kademlia {
     }
 
     pub async fn store_raw(&self, dst: NodeInfo, v: &str) -> Result<Reply> {
-        let k = Key::hash(v.as_bytes());
+        let k = DHTKey::hash(v.as_bytes());
 
         match self
             .rpc
@@ -266,7 +264,7 @@ impl Kademlia {
             .await
         {
             Err(err) => {
-                if let KademliaError::RequestTimeout = err {
+                if let RequestError::RequestTimeout = err {
                     debug!("DST {} {}: Store req timeout", dst.addr, dst.id);
                     self.routes.remove(&dst.id).await;
                 } else {
@@ -279,10 +277,10 @@ impl Kademlia {
         }
     }
 
-    pub async fn find_node_raw(&self, dst: NodeInfo, key: Key) -> Result<Reply> {
+    pub async fn find_node_raw(&self, dst: NodeInfo, key: DHTKey) -> Result<Reply> {
         match self.rpc.send_req(Request::FindNode(key), dst).await {
             Err(err) => {
-                if let KademliaError::RequestTimeout = err {
+                if let RequestError::RequestTimeout = err {
                     debug!("DST {} {}: Find node req timeout", dst.addr, dst.id);
                     self.routes.remove(&dst.id).await;
                 } else {
@@ -295,14 +293,14 @@ impl Kademlia {
         }
     }
 
-    pub async fn find_value_raw(&self, dst: NodeInfo, k: &Key) -> Result<Reply> {
+    pub async fn find_value_raw(&self, dst: NodeInfo, k: &DHTKey) -> Result<Reply> {
         match self
             .rpc
             .send_req(Request::FindValue(k.to_owned()), dst)
             .await
         {
             Err(err) => {
-                if let KademliaError::RequestTimeout = err {
+                if let RequestError::RequestTimeout = err {
                     debug!("DST {} {}: Find  value req timeout", dst.addr, dst.id);
                     self.routes.remove(&dst.id).await;
                 } else {
@@ -411,7 +409,7 @@ impl Kademlia {
         }
     }
 
-    pub async fn find_node(&self, dst: NodeInfo, id: Key) -> Result<Vec<NodeAndDistance>> {
+    pub async fn find_node(&self, dst: NodeInfo, id: DHTKey) -> Result<Vec<NodeAndDistance>> {
         match self.find_node_raw(dst, id).await {
             Err(e) => Err(e),
             Ok(reply) => {
@@ -427,7 +425,7 @@ impl Kademlia {
         }
     }
 
-    pub async fn find_value(&self, dst: NodeInfo, k: &Key) -> Result<FindValueResult> {
+    pub async fn find_value(&self, dst: NodeInfo, k: &DHTKey) -> Result<FindValueResult> {
         match self.find_value_raw(dst.clone(), &k).await {
             Err(e) => Err(e),
             Ok(reply) => {
@@ -437,7 +435,7 @@ impl Kademlia {
                     Ok(result)
                 } else {
                     warn!("wrong successful reply: {:#?}", reply);
-                    Err(KademliaError::UnknownResponse)
+                    Err(RequestError::UnknownResponse)
                 }
             }
         }
@@ -446,7 +444,7 @@ impl Kademlia {
     /// Finds at most [K_PARAM] closest nodes to the id.
     ///
     /// Returns [None] if there are no connectable nodes in the routing table.
-    pub async fn lookup_nodes(&self, id: &Key) -> Vec<NodeAndDistance> {
+    pub async fn lookup_nodes(&self, id: &DHTKey) -> Vec<NodeAndDistance> {
         let closest_local_nodes = self.routes.closest_nodes(id, K_PARAM).await;
         if closest_local_nodes.is_empty() {
             return Vec::new();
@@ -479,7 +477,7 @@ impl Kademlia {
         let mut jobs_counter = closest_local_nodes.len();
         let mut queried_nodes = HashSet::new();
 
-        queried_nodes.insert(self.routes.get_self_node_info());
+        queried_nodes.insert(self.local_node_info.clone());
 
         for node in closest_local_nodes {
             jobs_sender
@@ -511,8 +509,7 @@ impl Kademlia {
             match result {
                 Ok(result) => {
                     if let None = queried_nodes.get(&source) {
-                        let source_distance =
-                            self.routes.get_self_node_info().id.distance(&source.id);
+                        let source_distance = self.local_node_info.id.distance(&source.id);
 
                         insert_to_closest_nodes(NodeAndDistance(source, source_distance));
                     }
@@ -544,7 +541,7 @@ impl Kademlia {
         closest_nodes
     }
 
-    pub async fn lookup_value(&self, id: &Key) -> Option<String> {
+    pub async fn lookup_value(&self, id: &DHTKey) -> Option<String> {
         let closest_nodes = self.routes.closest_nodes(id, K_PARAM).await;
         if closest_nodes.is_empty() {
             return None;
@@ -574,7 +571,7 @@ impl Kademlia {
         let mut jobs_counter = closest_nodes.len();
         let mut queried_nodes = HashSet::new();
 
-        queried_nodes.insert(self.routes.get_self_node_info());
+        queried_nodes.insert(self.local_node_info.clone());
 
         for node in closest_nodes {
             jobs_sender
@@ -618,7 +615,7 @@ impl Kademlia {
     }
 
     pub async fn put(&self, v: &str) {
-        let k = Key::hash(v.as_bytes());
+        let k = DHTKey::hash(v.as_bytes());
         info!("key: {}", k);
         let candidates = self.routes.closest_nodes(&k, K_PARAM).await;
 
@@ -633,7 +630,7 @@ impl Kademlia {
         }
     }
 
-    pub async fn get(&self, k: &Key) -> Option<String> {
+    pub async fn get(&self, k: &DHTKey) -> Option<String> {
         if let Some(v) = self.store.lock().await.get(&k) {
             return Some(v.to_owned());
         }

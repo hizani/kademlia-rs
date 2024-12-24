@@ -34,7 +34,7 @@ async fn main() {
     let mut handle = Kademlia::new();
     if params.len() >= 2 {
         let nodes = vec![NodeInfo {
-            id: Key::from_hex(params[1]).unwrap(),
+            id: DHTKey::from_hex(params[1]).unwrap(),
             addr: SocketAddr::from_str(params[0]).unwrap(),
         }];
 
@@ -49,7 +49,7 @@ async fn main() {
 
     let mut dummy_info = NodeInfo {
         addr: SocketAddr::from_str("127.0.0.1:0").unwrap(),
-        id: Key::random(),
+        id: DHTKey::random(),
     };
 
     loop {
@@ -64,31 +64,31 @@ async fn main() {
             }
             "p" => {
                 dummy_info.addr = SocketAddr::from_str(args[1]).unwrap();
-                dummy_info.id = Key::from_hex(args[2]).unwrap();
+                dummy_info.id = DHTKey::from_hex(args[2]).unwrap();
                 println!("{:?}", handle.ping(dummy_info.clone()).await);
             }
             "s" => {
                 dummy_info.addr = SocketAddr::from_str(args[1]).unwrap();
-                dummy_info.id = Key::from_hex(args[2]).unwrap();
+                dummy_info.id = DHTKey::from_hex(args[2]).unwrap();
                 println!("{:?}", handle.store(dummy_info.clone(), args[3]).await);
             }
             "fn" => {
                 dummy_info.addr = SocketAddr::from_str(args[1]).unwrap();
-                dummy_info.id = Key::from_hex(args[2]).unwrap();
+                dummy_info.id = DHTKey::from_hex(args[2]).unwrap();
                 println!(
                     "{:?}",
                     handle
-                        .find_node(dummy_info.clone(), Key::from_hex(args[3]).unwrap())
+                        .find_node(dummy_info.clone(), DHTKey::from_hex(args[3]).unwrap())
                         .await
                 );
             }
             "fv" => {
                 dummy_info.addr = SocketAddr::from_str(args[1]).unwrap();
-                dummy_info.id = Key::from_hex(args[2]).unwrap();
+                dummy_info.id = DHTKey::from_hex(args[2]).unwrap();
                 println!(
                     "{:?}",
                     handle
-                        .find_value(dummy_info.clone(), &Key::hash(args[3].as_bytes()))
+                        .find_value(dummy_info.clone(), &DHTKey::hash(args[3].as_bytes()))
                         .await
                         .unwrap()
                 );
@@ -96,19 +96,19 @@ async fn main() {
             "ln" => {
                 println!(
                     "{:?}",
-                    handle.lookup_nodes(&Key::hash(args[1].as_bytes())).await
+                    handle.lookup_nodes(&DHTKey::hash(args[1].as_bytes())).await
                 );
             }
             "lv" => {
                 println!(
                     "{:?}",
-                    handle.lookup_value(&Key::hash(args[1].as_bytes())).await
+                    handle.lookup_value(&DHTKey::hash(args[1].as_bytes())).await
                 );
             }
             "put" => {
                 println!("{:?}", handle.put(args[1]).await);
             }
-            "get" => match Key::from_hex(args[1].as_bytes().to_owned()) {
+            "get" => match DHTKey::from_hex(args[1].as_bytes().to_owned()) {
                 Ok(key) => println!("{:?}", handle.get(&key).await),
                 Err(e) => error!("can't get value by key: {}", e),
             },

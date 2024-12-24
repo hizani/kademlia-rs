@@ -1,24 +1,30 @@
+use dryoc::dryocbox::{KeyPair, Nonce, PublicKey, VecBox};
+use dryoc::types::{ByteArray, NewByteArray};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::str;
 use std::sync::Arc;
+use tokio::io;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tracing::{debug, error, info, warn};
 
-use crate::kademlia::{KademliaError, Result};
+use crate::kademlia::RequestError;
 use crate::{
     kademlia::{Reply, Request},
     routing::NodeInfo,
-    Key, MESSAGE_LEN, TIMEOUT,
+    DHTKey, MESSAGE_LEN, TIMEOUT,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Payload(VecBox, Nonce);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct RpcMessage {
-    token: Key,
+    token: DHTKey,
     src: NodeInfo,
     dst: NodeInfo,
     msg: Message,
@@ -32,7 +38,7 @@ pub(crate) enum Message {
 }
 
 pub(crate) struct ReqHandle {
-    token: Key,
+    token: DHTKey,
     src: NodeInfo,
     req: Request,
     rpc: Rpc,
@@ -45,7 +51,7 @@ impl ReqHandle {
     pub fn get_src(&self) -> &NodeInfo {
         &self.src
     }
-    pub async fn reply(self, rep: Reply) -> Result<()> {
+    pub async fn reply(self, rep: Reply) -> Result<(), SendMsgError> {
         let rep_rmsg = RpcMessage {
             token: self.token,
             src: self.rpc.node_info,
@@ -60,17 +66,44 @@ impl ReqHandle {
 #[derive(Clone)]
 pub(crate) struct Rpc {
     socket: Arc<UdpSocket>,
-    pending: Arc<Mutex<HashMap<Key, tokio::sync::oneshot::Sender<Reply>>>>,
+    pending: Arc<Mutex<HashMap<DHTKey, tokio::sync::oneshot::Sender<Reply>>>>,
     node_info: NodeInfo,
+    key_pair: KeyPair,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SendMsgError {
+    #[error("can't serialize message: {}", 0)]
+    CantSerializeMsg(serde_json::Error),
+    #[error("can't encrypt message: {}", 0)]
+    CantEncryptMsg(dryoc::Error),
+    #[error(transparent)]
+    IoError(#[from] io::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum InitRpcError {
+    #[error(transparent)]
+    FailedToBindSocket(#[from] io::Error),
 }
 
 impl Rpc {
     /// Initializes and runs RPC service
-    pub fn new(socket: UdpSocket, tx: Sender<ReqHandle>, node_info: NodeInfo) -> Rpc {
+    pub async fn new(
+        addr: SocketAddr,
+        tx: Sender<ReqHandle>,
+        key_pair: KeyPair,
+    ) -> Result<Rpc, InitRpcError> {
+        let socket = UdpSocket::bind(addr).await?;
+
         let rpc = Rpc {
+            node_info: NodeInfo {
+                id: DHTKey::from(key_pair.public_key.as_array().clone()),
+                addr: socket.local_addr()?,
+            },
+            key_pair,
             socket: Arc::new(socket),
             pending: Arc::new(Mutex::new(HashMap::new())),
-            node_info,
         };
 
         let rpc_clone = rpc.clone();
@@ -125,11 +158,15 @@ impl Rpc {
             }
         });
 
-        rpc_clone
+        Ok(rpc_clone)
+    }
+
+    pub fn get_address(&self) -> Option<SocketAddr> {
+        self.socket.local_addr().ok()
     }
 
     /// Passes a reply received through the Rpc socket to the appropriate pending Receiver
-    async fn handle_rep(self, token: Key, rep: Reply) {
+    async fn handle_rep(self, token: DHTKey, rep: Reply) {
         tokio::spawn(async move {
             match self.pending.lock().await.remove(&token) {
                 Some(tx) => _ = tx.send(rep),
@@ -142,21 +179,37 @@ impl Rpc {
     }
 
     /// Sends a message
-    async fn send_msg(&self, rmsg: &RpcMessage, addr: SocketAddr) -> Result<()> {
-        let enc_msg =
-            serde_json::to_vec(rmsg).or_else(|e| Err(KademliaError::CantSerializeMsg(e)))?;
-        self.socket.send_to(&enc_msg, addr).await?;
+    async fn send_msg(&self, rmsg: &RpcMessage, addr: SocketAddr) -> Result<(), SendMsgError> {
+        let json_msg =
+            serde_json::to_vec(rmsg).or_else(|e| Err(SendMsgError::CantSerializeMsg(e)))?;
+
+        let recipient_public_key = PublicKey::from(rmsg.dst.id.as_array().clone());
+        let nonce = Nonce::gen();
+
+        let encrypted_box = dryoc::dryocbox::VecBox::encrypt_to_vecbox(
+            &json_msg,
+            &nonce,
+            &recipient_public_key,
+            &self.key_pair.secret_key,
+        )
+        .or_else(|e| Err(SendMsgError::CantEncryptMsg(e)))?;
+
+        // TODO: Decrypt msg
+        let payload = serde_json::to_vec(&Payload(encrypted_box, nonce))
+            .or_else(|e| Err(SendMsgError::CantSerializeMsg(e)))?;
+
+        self.socket.send_to(&payload, addr).await?;
         debug!("| OUT | {:?} ==> {:?} ", rmsg.msg, rmsg.dst.id);
         Ok(())
     }
 
     /// Sends a request of data from src_info to dst_info
-    pub async fn send_req(&self, req: Request, dst: NodeInfo) -> Result<Reply> {
+    pub async fn send_req(&self, req: Request, dst: NodeInfo) -> Result<Reply, RequestError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let mut pending = self.pending.lock().await;
-        let mut token = Key::random();
+        let mut token = DHTKey::random();
         while pending.contains_key(&token) {
-            token = Key::random();
+            token = DHTKey::random();
         }
         pending.insert(token.to_owned(), tx);
         drop(pending);
@@ -172,10 +225,12 @@ impl Rpc {
         let rpc = self.clone();
 
         match tokio::time::timeout(Duration::from_millis(TIMEOUT), rx).await {
-            Ok(resp) => Ok(resp.unwrap()),
+            Ok(resp) => {
+                Ok(resp.expect("impossible condition: sender has dropped without sending a value"))
+            }
             Err(_) => {
                 rpc.pending.lock().await.remove(&token);
-                Err(KademliaError::RequestTimeout)
+                Err(RequestError::RequestTimeout)
             }
         }
     }
