@@ -34,8 +34,8 @@ async fn main() {
     let mut handle = Kademlia::new();
     if params.len() >= 2 {
         let nodes = vec![NodeInfo {
-            id: DHTKey::from_hex(params[1]).unwrap(),
-            addr: SocketAddr::from_str(params[0]).unwrap(),
+            id: DHTKey::from_hex(params[0]).unwrap(),
+            addr: SocketAddr::from_str(params[1]).unwrap(),
         }];
 
         handle.bootstrap(nodes);
