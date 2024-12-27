@@ -54,9 +54,21 @@ impl DHTKey {
     }
 }
 
+impl From<DHTKey> for [u8; KEY_LEN] {
+    fn from(value: DHTKey) -> Self {
+        value.0
+    }
+}
+
 impl From<[u8; KEY_LEN]> for DHTKey {
     fn from(value: [u8; KEY_LEN]) -> Self {
         DHTKey(value)
+    }
+}
+
+impl From<&[u8; KEY_LEN]> for DHTKey {
+    fn from(value: &[u8; KEY_LEN]) -> Self {
+        DHTKey(value.clone())
     }
 }
 

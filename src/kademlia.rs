@@ -15,7 +15,7 @@ use crate::rpc::{InitRpcError, SendMsgError};
 use crate::KEY_LEN;
 use crate::{
     routing::{NodeAndDistance, NodeInfo, RoutingTable},
-    rpc::{ReqHandle, Rpc},
+    rpc::{ReqContext, Rpc},
     DHTKey, A_PARAM, K_PARAM,
 };
 
@@ -197,15 +197,18 @@ impl Kademlia {
         KademliaBuilder::new()
     }
 
-    fn start_req_handler(self, mut rx: mpsc::Receiver<ReqHandle>) {
+    // TODO: Move it to RPC?
+    fn start_req_handler(self, mut rx: mpsc::Receiver<ReqContext>) {
         tokio::spawn(async move {
-            while let Some(req_handle) = rx.recv().await {
+            while let Some(req_context) = rx.recv().await {
                 let node = self.clone();
+
+                // TODO: add something like rate limiter to prevent DDOS attack.
                 tokio::spawn(async move {
                     let rep = node
-                        .handle_req(req_handle.get_req().clone(), req_handle.get_src().clone())
+                        .handle_req(req_context.get_req(), req_context.get_src())
                         .await;
-                    if let Err(e) = req_handle.reply(rep).await {
+                    if let Err(e) = node.rpc.reply(req_context, rep).await {
                         error!("reply send error: {}", e)
                     }
                 });
