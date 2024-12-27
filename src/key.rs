@@ -1,5 +1,5 @@
 use const_hex::{FromHex, ToHexExt};
-use dryoc::dryocbox::PublicKey;
+use dryoc::{dryocbox::PublicKey, types::ByteArray};
 use hashes::sha2::sha256;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -18,6 +18,7 @@ pub struct DHTKey([u8; KEY_LEN]);
 
 impl DHTKey {
     /// Initializes [Key] with a random, [KEY_LEN] long array.
+    #[inline]
     pub fn random() -> DHTKey {
         DHTKey(rand::random())
     }
@@ -28,6 +29,7 @@ impl DHTKey {
         DHTKey(hash.into_bytes())
     }
 
+    #[inline]
     pub fn as_array(&self) -> &[u8; KEY_LEN] {
         &self.0
     }
@@ -55,37 +57,64 @@ impl DHTKey {
     }
 }
 
+impl From<PublicKey> for DHTKey {
+    #[inline]
+    fn from(value: PublicKey) -> Self {
+        DHTKey::from(value.as_array())
+    }
+}
+
+impl From<&PublicKey> for &DHTKey {
+    #[inline]
+    fn from(value: &PublicKey) -> Self {
+        unsafe { std::mem::transmute(value.as_array()) }
+    }
+}
+
+impl From<DHTKey> for PublicKey {
+    #[inline]
+    fn from(value: DHTKey) -> Self {
+        PublicKey::from(value.0)
+    }
+}
+
 impl From<&DHTKey> for &PublicKey {
+    #[inline]
     fn from(value: &DHTKey) -> Self {
         unsafe { std::mem::transmute(&value.0) }
     }
 }
 
 impl From<DHTKey> for [u8; KEY_LEN] {
+    #[inline]
     fn from(value: DHTKey) -> Self {
         value.0
     }
 }
 
 impl From<[u8; KEY_LEN]> for DHTKey {
+    #[inline]
     fn from(value: [u8; KEY_LEN]) -> Self {
         DHTKey(value)
     }
 }
 
 impl From<&[u8; KEY_LEN]> for DHTKey {
+    #[inline]
     fn from(value: &[u8; KEY_LEN]) -> Self {
         DHTKey(value.clone())
     }
 }
 
 impl Display for DHTKey {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.encode_hex_upper())
     }
 }
 
 impl Debug for DHTKey {
+    #[inline]
     fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
         write!(f, "{}", self.encode_hex_with_prefix())
     }
@@ -93,12 +122,14 @@ impl Debug for DHTKey {
 
 impl FromStr for DHTKey {
     type Err = const_hex::FromHexError;
+    #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         DHTKey::from_hex(s)
     }
 }
 
 impl AsRef<[u8]> for DHTKey {
+    #[inline]
     fn as_ref(&self) -> &[u8] {
         &self.0
     }
@@ -179,6 +210,7 @@ impl Debug for Distance {
 }
 
 impl AsRef<[u8]> for Distance {
+    #[inline]
     fn as_ref(&self) -> &[u8] {
         &self.0
     }
