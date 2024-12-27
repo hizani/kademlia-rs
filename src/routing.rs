@@ -239,7 +239,7 @@ impl RoutingTable {
     }
 
     #[inline]
-    fn get_bucket_by_key<'a>(&'a self, key: &DHTKey) -> Option<(&'a Kbucket, usize)> {
+    fn get_bucket_by_key(&self, key: &DHTKey) -> Option<(&Kbucket, usize)> {
         let index = self.lookup_bucket_index(self.local_key.distance(key));
         self.buckets.get(index).zip(Some(index))
     }

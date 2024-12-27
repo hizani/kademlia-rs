@@ -92,13 +92,13 @@ impl KademliaBuilder {
         KademliaBuilder::default()
     }
 
-    pub fn keypair<'a>(&'a mut self, keys: KeyPair) -> &'a mut Self {
+    pub fn keypair(&mut self, keys: KeyPair) -> &mut Self {
         self.key_pair = Some(keys);
         self
     }
 
     /// Derives a keypair from a secret key.
-    pub fn keypair_from_sk<'a>(&'a mut self, sk: SecretKey) -> &'a mut Self {
+    pub fn keypair_from_sk(&mut self, sk: SecretKey) -> &mut Self {
         let key_pair = KeyPair::from_secret_key(sk);
 
         self.key_pair = Some(key_pair);
@@ -106,10 +106,10 @@ impl KademliaBuilder {
     }
 
     /// Reads a secret key from reader and derives a keypair from it.
-    pub fn keypair_read_sk<'a>(
-        &'a mut self,
+    pub fn keypair_read_sk(
+        &mut self,
         reader: &mut impl Read,
-    ) -> std::result::Result<&'a mut Self, ReadSecretKeyError> {
+    ) -> std::result::Result<&mut Self, ReadSecretKeyError> {
         const KEY_LEN: usize = dryoc::constants::CRYPTO_BOX_SECRETKEYBYTES;
         let mut buf = [0; KEY_LEN];
 
@@ -122,26 +122,26 @@ impl KademliaBuilder {
         Ok(self)
     }
 
-    pub fn address<'a>(&'a mut self, address: IpAddr) -> &'a mut Self {
+    pub fn address(&mut self, address: IpAddr) -> &mut Self {
         self.address = Some(address);
         self
     }
 
-    pub fn port<'a>(&'a mut self, port: u16) -> &'a mut Self {
+    pub fn port(&mut self, port: u16) -> &mut Self {
         self.port = port;
         self
     }
 
-    pub fn bootstrap<'a>(&'a mut self, nodes: Vec<NodeInfo>) -> &'a mut Self {
+    pub fn bootstrap(&mut self, nodes: Vec<NodeInfo>) -> &mut Self {
         self.bootstrap_nodes = Some(nodes);
         self
     }
 
     /// Read bootstrap nodes from reader.
-    pub fn bootstrap_read<'a>(
-        &'a mut self,
+    pub fn bootstrap_read(
+        &mut self,
         reader: &mut impl Read,
-    ) -> std::result::Result<&'a mut Self, ReadBootstrapError> {
+    ) -> std::result::Result<&mut Self, ReadBootstrapError> {
         const BUFLEN: usize = 47 + KEY_LEN * 2;
         let mut buf = Vec::with_capacity(BUFLEN);
         let mut nodes = Vec::new();
