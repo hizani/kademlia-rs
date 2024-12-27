@@ -43,21 +43,9 @@ pub(crate) enum Message {
 
 /// ReqContext holds data needed to process an ongoing request.
 pub(crate) struct ReqContext {
-    req_id: RequestId,
-    src: NodeInfo,
-    req: Request,
-}
-
-impl ReqContext {
-    #[inline]
-    pub fn get_req(&self) -> Request {
-        self.req.clone()
-    }
-
-    #[inline]
-    pub fn get_src(&self) -> &NodeInfo {
-        &self.src
-    }
+    pub req_id: RequestId,
+    pub src: NodeInfo,
+    pub req: Request,
 }
 
 #[derive(Debug, Clone)]
@@ -70,9 +58,9 @@ pub(crate) struct Rpc {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SendMsgError {
-    #[error("can't serialize message: {}", 0)]
-    CantSerializeMsg(rmp_serde::encode::Error),
-    #[error("can't encrypt message: {}", 0)]
+    #[error("can't serialize message: {0}")]
+    CantSerializeMsg(#[from] rmp_serde::encode::Error),
+    #[error("can't encrypt message: {0}")]
     CantEncryptMsg(dryoc::Error),
     #[error(transparent)]
     IoError(#[from] io::Error),
@@ -110,7 +98,7 @@ impl Rpc {
                 let (len, src_addr) = match rpc.socket.recv_from(&mut buf).await {
                     Ok(node_info) => node_info,
                     Err(err) => {
-                        error!("Failed to receive datagram from a socket: {}", err);
+                        error!("failed to receive datagram from a socket: {}", err);
                         continue;
                     }
                 };
@@ -118,7 +106,7 @@ impl Rpc {
                 let payload: EncryptedPayload = match rmp_serde::from_slice(&buf[..len]) {
                     Ok(p) => p,
                     Err(err) => {
-                        warn!("Message received, but cannot be parsed: {}", err);
+                        warn!("message received, but cannot be parsed: {}", err);
                         continue;
                     }
                 };
@@ -130,7 +118,7 @@ impl Rpc {
                 ) {
                     Ok(plaintext) => plaintext,
                     Err(err) => {
-                        warn!("Message received, but cannot be decrypted: {}", err);
+                        warn!("message received, but cannot be decrypted: {}", err);
                         continue;
                     }
                 };
@@ -138,7 +126,7 @@ impl Rpc {
                 let rpc_msg: RpcMessage = match rmp_serde::from_slice(&plaintext) {
                     Ok(rmsg) => rmsg,
                     Err(err) => {
-                        warn!("Message decrypted, but cannot be parsed: {}", err);
+                        warn!("message decrypted, but cannot be parsed: {}", err);
                         continue;
                     }
                 };
@@ -192,27 +180,30 @@ impl Rpc {
     }
 
     #[inline]
-    pub async fn reply(&self, context: ReqContext, rep: Reply) -> Result<(), SendMsgError> {
+    pub async fn reply(
+        &self,
+        req_id: RequestId,
+        dst: &NodeInfo,
+        rep: Reply,
+    ) -> Result<(), SendMsgError> {
         let rep_rmsg = RpcMessage {
-            req_id: context.req_id,
+            req_id: req_id,
             msg: Message::Reply(rep),
         };
 
-        self.send_msg(rep_rmsg, context.src).await
+        self.send_msg(&rep_rmsg, dst).await
     }
 
     /// Sends a message
-    async fn send_msg(&self, rpc_msg: RpcMessage, dst: NodeInfo) -> Result<(), SendMsgError> {
-        let message =
-            rmp_serde::to_vec(&rpc_msg).or_else(|e| Err(SendMsgError::CantSerializeMsg(e)))?;
+    async fn send_msg(&self, rpc_msg: &RpcMessage, dst: &NodeInfo) -> Result<(), SendMsgError> {
+        let dst_key = &dst.id;
 
-        let recipient_public_key = PublicKey::from(<[u8; KEY_LEN]>::from(dst.id));
+        let message = rmp_serde::to_vec(rpc_msg)?;
         let nonce = Nonce::gen();
-
         let encrypted_box = dryoc::dryocbox::VecBox::encrypt_to_vecbox(
             &message,
             &nonce,
-            &recipient_public_key,
+            dst_key.into(),
             &self.key_pair.secret_key,
         )
         .or_else(|e| Err(SendMsgError::CantEncryptMsg(e)))?;
@@ -247,7 +238,7 @@ impl Rpc {
             msg: Message::Request(req),
         };
 
-        self.send_msg(rmsg, dst.clone()).await?;
+        self.send_msg(&rmsg, &dst).await?;
 
         let rpc = self.clone();
 

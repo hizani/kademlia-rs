@@ -1,4 +1,5 @@
 use const_hex::{FromHex, ToHexExt};
+use dryoc::dryocbox::PublicKey;
 use hashes::sha2::sha256;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -51,6 +52,12 @@ impl DHTKey {
         let result = simd1 ^ simd2;
 
         Distance(result.to_array())
+    }
+}
+
+impl From<&DHTKey> for &PublicKey {
+    fn from(value: &DHTKey) -> Self {
+        unsafe { std::mem::transmute(&value.0) }
     }
 }
 

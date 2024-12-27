@@ -234,12 +234,14 @@ impl Kademlia {
 
                 // TODO: add something like rate limiter to prevent DDOS attack.
                 tokio::spawn(async move {
-                    let span = debug_span!("reply", dst=%req_context.get_src().id);
+                    let span = debug_span!("reply", dst=%req_context.src.id);
                     let span_guard = span.enter();
-                    let rep = node
-                        .handle_req(req_context.get_req(), req_context.get_src())
-                        .await;
-                    if let Err(e) = node.rpc.reply(req_context, rep).await {
+                    let rep = node.handle_req(req_context.req, &req_context.src).await;
+                    if let Err(e) = node
+                        .rpc
+                        .reply(req_context.req_id, &req_context.src, rep)
+                        .await
+                    {
                         error!("reply send error: {}", e)
                     }
                     drop(span_guard)
