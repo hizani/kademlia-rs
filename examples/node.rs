@@ -65,7 +65,7 @@ async fn main() {
             "p" => {
                 dummy_info.addr = SocketAddr::from_str(args[1]).unwrap();
                 dummy_info.id = DHTKey::from_hex(args[2]).unwrap();
-                println!("{:?}", handle.ping(&dummy_info).await);
+                println!("{:?}", handle.ping(&dummy_info, false).await);
             }
             "s" => {
                 dummy_info.addr = SocketAddr::from_str(args[1]).unwrap();

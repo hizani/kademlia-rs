@@ -415,24 +415,19 @@ impl Kademlia {
     }
 
     /// Pings dst and saves it to the routing table if it is connectable.
-    pub async fn ping(&self, dst: &NodeInfo) -> Result<()> {
+    ///
+    /// Doesn't try to clean K-Bucket if there is no room for dst insertion if
+    /// discard is true.
+    pub async fn ping(&self, dst: &NodeInfo, discard: bool) -> Result<()> {
         if let Err(e) = self.ping_raw(&dst).await {
             Err(e)
         } else {
-            self.append_with_refresh_no_error(dst.clone()).await;
-            Ok(())
-        }
-    }
+            if discard {
+                _ = self.routes.update(dst.clone(), true);
+            } else {
+                self.append_with_refresh_no_error(dst.clone()).await;
+            }
 
-    // TODO: remove this function and add discard: bool parameter to the ping fn
-    //
-    /// Pings dst and saves it to the routing table if it is connectable.
-    /// Doesn't try to clean K-Bucket if there is no room for dst insertion
-    pub async fn ping_discard(&self, dst: &NodeInfo) -> Result<()> {
-        if let Err(e) = self.ping_raw(dst).await {
-            Err(e)
-        } else {
-            _ = self.routes.update(dst.clone(), true);
             Ok(())
         }
     }
@@ -695,7 +690,7 @@ impl Kademlia {
     pub async fn append_with_refresh(&self, node_info: NodeInfo) -> Result<()> {
         if let Err(update_err) = self.routes.update(node_info, true).await {
             for node in update_err.nodes {
-                if let Err(ping_err) = self.ping_discard(&node).await {
+                if let Err(ping_err) = Box::pin(self.ping(&node, true)).await {
                     return Err(ping_err);
                 }
             }

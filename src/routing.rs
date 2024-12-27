@@ -121,7 +121,6 @@ impl RoutingTable {
     /// Update the appropriate bucket with the new node's info
     pub async fn update(&self, node_info: NodeInfo, evict: bool) -> Result<(), ErrBucketIsFull> {
         if let Some((bucket, bucket_n)) = self.get_bucket_by_key(&node_info.id) {
-            // TODO: Extract bucket logic to the impl Kbucket
             let mut nodes = bucket.nodes.lock().await;
 
             let node_index = nodes.iter().position(|x| x.id == node_info.id);
