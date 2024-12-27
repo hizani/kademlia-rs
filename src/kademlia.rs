@@ -1,9 +1,9 @@
 use async_channel as mpmc;
-use dryoc::dryocbox::KeyPair;
+use dryoc::dryocbox::{KeyPair, SecretKey};
 use dryoc::types::ByteArray;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
+use std::io::{self, Read};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -58,11 +58,21 @@ pub struct Kademlia {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[error("can't read secret key: {0}")]
+pub struct ReadSecretKeyError(#[from] io::Error);
+
+#[derive(Debug, thiserror::Error)]
+pub enum ReadBootstrapError {
+    #[error("can't parse node: {0}")]
+    CantParseNode(#[from] ParseNodeInfoError),
+    #[error("can't read bootstrap nodes: {0}")]
+    IoError(#[from] io::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
 pub enum KademliaStartError {
-    #[error("can't bind udp socket: {}", 0)]
+    #[error("can't bind udp socket: {0}")]
     CandInitRpc(#[from] InitRpcError),
-    #[error(transparent)]
-    CantBootstrap(#[from] ParseNodeInfoError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -82,9 +92,34 @@ impl KademliaBuilder {
         KademliaBuilder::default()
     }
 
-    pub fn key<'a>(&'a mut self, key: KeyPair) -> &'a mut Self {
-        self.key_pair = Some(key);
+    pub fn keypair<'a>(&'a mut self, keys: KeyPair) -> &'a mut Self {
+        self.key_pair = Some(keys);
         self
+    }
+
+    /// Derives a keypair from a secret key.
+    pub fn keypair_from_sk<'a>(&'a mut self, sk: SecretKey) -> &'a mut Self {
+        let key_pair = KeyPair::from_secret_key(sk);
+
+        self.key_pair = Some(key_pair);
+        self
+    }
+
+    /// Reads a secret key from reader and derives a keypair from it.
+    pub fn keypair_read_sk<'a>(
+        &'a mut self,
+        reader: &mut impl Read,
+    ) -> std::result::Result<&'a mut Self, ReadSecretKeyError> {
+        const KEY_LEN: usize = dryoc::constants::CRYPTO_BOX_SECRETKEYBYTES;
+        let mut buf = [0; KEY_LEN];
+
+        reader.read_exact(&mut buf)?;
+
+        let sk = SecretKey::from(buf);
+        let key_pair = KeyPair::from_secret_key(sk);
+
+        self.key_pair = Some(key_pair);
+        Ok(self)
     }
 
     pub fn address<'a>(&'a mut self, address: IpAddr) -> &'a mut Self {
@@ -102,10 +137,11 @@ impl KademliaBuilder {
         self
     }
 
-    pub fn bootstrap_from_reader<'a>(
+    /// Read bootstrap nodes from reader.
+    pub fn bootstrap_read<'a>(
         &'a mut self,
-        reader: impl Read,
-    ) -> std::result::Result<&'a mut Self, KademliaStartError> {
+        reader: &mut impl Read,
+    ) -> std::result::Result<&'a mut Self, ReadBootstrapError> {
         const BUFLEN: usize = 47 + KEY_LEN * 2;
         let mut buf = Vec::with_capacity(BUFLEN);
         let mut nodes = Vec::new();
@@ -116,24 +152,18 @@ impl KademliaBuilder {
                     if byte == b'\n' {
                         let trim = buf.trim_ascii_end();
 
-                        nodes.push(
-                            NodeInfo::try_from(trim)
-                                .or_else(|e| Err(KademliaStartError::CantBootstrap(e)))?,
-                        );
+                        nodes.push(NodeInfo::try_from(trim)?);
                         buf.clear();
                         continue;
                     }
 
                     buf.push(byte);
                 }
-                Err(_) => {
-                    nodes.push(
-                        NodeInfo::try_from(buf.as_slice())
-                            .or_else(|e| Err(KademliaStartError::CantBootstrap(e)))?,
-                    );
-                }
+                Err(e) => Err(e)?,
             }
         }
+
+        nodes.push(NodeInfo::try_from(buf.as_slice())?);
 
         self.bootstrap_nodes = Some(nodes);
         Ok(self)
@@ -197,7 +227,6 @@ impl Kademlia {
         KademliaBuilder::new()
     }
 
-    // TODO: Move it to RPC?
     fn start_req_handler(self, mut rx: mpsc::Receiver<ReqContext>) {
         tokio::spawn(async move {
             while let Some(req_context) = rx.recv().await {
