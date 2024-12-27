@@ -6,7 +6,6 @@ mod routing;
 mod rpc;
 
 // TODO: add comments at least for public functions.
-// TODO: use a homebrewed encrypted binary protocol instead of json.
 
 pub use kademlia::start;
 pub use kademlia::Kademlia;
@@ -14,14 +13,14 @@ pub use key::DHTKey;
 pub use routing::NodeInfo;
 
 /// Length of key in bytes
-const KEY_LEN: usize = 32;
+const KEY_LEN: usize = dryoc::constants::CRYPTO_BOX_PUBLICKEYBYTES;
 /// Number of buckets
 const N_BUCKETS: usize = KEY_LEN * 8;
 /// Entries per bucket
 const K_PARAM: usize = 8;
-/// Number of parallel requests
-const A_PARAM: usize = 3;
 /// Max message length
 const MESSAGE_LEN: usize = 8196;
 /// Default timeout
 const TIMEOUT: u64 = 5000;
+/// Number of parallel requests
+const A_PARAM: u8 = 3;
