@@ -10,7 +10,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tokio::time::Duration;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, debug_span, error, info, warn};
 
 use crate::kademlia::RequestError;
 use crate::KEY_LEN;
@@ -55,12 +55,12 @@ impl ReqContext {
     }
 
     #[inline]
-    pub fn get_src(&self) -> NodeInfo {
-        self.src
+    pub fn get_src(&self) -> &NodeInfo {
+        &self.src
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct Rpc {
     socket: Arc<UdpSocket>,
     pending: Arc<Mutex<HashMap<RequestId, tokio::sync::oneshot::Sender<Reply>>>>,
@@ -105,7 +105,6 @@ impl Rpc {
 
         let rpc_clone = rpc.clone();
         tokio::spawn(async move {
-            // TODO: add streaming instead of expecting the whole message to be in a single datagram
             let mut buf = [0u8; MESSAGE_LEN];
             loop {
                 let (len, src_addr) = match rpc.socket.recv_from(&mut buf).await {
@@ -136,7 +135,7 @@ impl Rpc {
                     }
                 };
 
-                let rmsg: RpcMessage = match rmp_serde::from_slice(&plaintext) {
+                let rpc_msg: RpcMessage = match rmp_serde::from_slice(&plaintext) {
                     Ok(rmsg) => rmsg,
                     Err(err) => {
                         warn!("Message decrypted, but cannot be parsed: {}", err);
@@ -146,12 +145,14 @@ impl Rpc {
 
                 let src_dhtkey = DHTKey::from(payload.src_pubkey.as_array());
 
-                debug!("|  IN | {:?} <== {:?} ", rmsg.msg, src_dhtkey);
+                debug_span!("incoming", src=%src_dhtkey).in_scope(|| {
+                    debug!("{:?}", rpc_msg.msg);
+                });
 
-                match rmsg.msg {
+                match rpc_msg.msg {
                     Message::Request(req) => {
                         let req_handle = ReqContext {
-                            req_id: rmsg.req_id,
+                            req_id: rpc_msg.req_id,
                             src: NodeInfo {
                                 addr: src_addr,
                                 id: src_dhtkey,
@@ -164,7 +165,7 @@ impl Rpc {
                         }
                     }
                     Message::Reply(rep) => {
-                        rpc.clone().handle_rep(rmsg.req_id, rep).await;
+                        rpc.clone().handle_rep(rpc_msg.req_id, rep).await;
                     }
                 }
             }
@@ -197,13 +198,13 @@ impl Rpc {
             msg: Message::Reply(rep),
         };
 
-        self.send_msg(&rep_rmsg, context.src).await
+        self.send_msg(rep_rmsg, context.src).await
     }
 
     /// Sends a message
-    async fn send_msg(&self, rmsg: &RpcMessage, dst: NodeInfo) -> Result<(), SendMsgError> {
+    async fn send_msg(&self, rpc_msg: RpcMessage, dst: NodeInfo) -> Result<(), SendMsgError> {
         let message =
-            rmp_serde::to_vec(rmsg).or_else(|e| Err(SendMsgError::CantSerializeMsg(e)))?;
+            rmp_serde::to_vec(&rpc_msg).or_else(|e| Err(SendMsgError::CantSerializeMsg(e)))?;
 
         let recipient_public_key = PublicKey::from(<[u8; KEY_LEN]>::from(dst.id));
         let nonce = Nonce::gen();
@@ -217,20 +218,21 @@ impl Rpc {
         .or_else(|e| Err(SendMsgError::CantEncryptMsg(e)))?;
 
         let payload = rmp_serde::to_vec(&EncryptedPayload {
-            src_pubkey: PublicKey::from(<[u8; KEY_LEN]>::from(self.node_info.id)),
+            src_pubkey: PublicKey::from(<[u8; KEY_LEN]>::from(self.node_info.id.clone())),
             nonce,
             ciphertext: encrypted_box,
         })
         .or_else(|e| Err(SendMsgError::CantSerializeMsg(e)))?;
 
-        self.socket.send_to(&payload, dst.addr).await?;
-        debug!("| OUT | {:?} ==> {:?} ", rmsg.msg, dst.id);
+        self.socket.send_to(&payload, &dst.addr).await?;
+
+        debug!("{:?}", rpc_msg.msg);
 
         Ok(())
     }
 
     /// Sends a request of data from src_info to dst_info
-    pub async fn send_req(&self, req: Request, dst: NodeInfo) -> Result<Reply, RequestError> {
+    pub async fn send_req(&self, req: Request, dst: &NodeInfo) -> Result<Reply, RequestError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let mut pending = self.pending.lock().await;
         let mut req_id = rand::random();
@@ -245,7 +247,7 @@ impl Rpc {
             msg: Message::Request(req),
         };
 
-        self.send_msg(&rmsg, dst).await?;
+        self.send_msg(rmsg, dst.clone()).await?;
 
         let rpc = self.clone();
 

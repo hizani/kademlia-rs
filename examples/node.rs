@@ -65,12 +65,12 @@ async fn main() {
             "p" => {
                 dummy_info.addr = SocketAddr::from_str(args[1]).unwrap();
                 dummy_info.id = DHTKey::from_hex(args[2]).unwrap();
-                println!("{:?}", handle.ping(dummy_info.clone()).await);
+                println!("{:?}", handle.ping(&dummy_info).await);
             }
             "s" => {
                 dummy_info.addr = SocketAddr::from_str(args[1]).unwrap();
                 dummy_info.id = DHTKey::from_hex(args[2]).unwrap();
-                println!("{:?}", handle.store(dummy_info.clone(), args[3]).await);
+                println!("{:?}", handle.store(&dummy_info, args[3]).await);
             }
             "fn" => {
                 dummy_info.addr = SocketAddr::from_str(args[1]).unwrap();
@@ -78,7 +78,7 @@ async fn main() {
                 println!(
                     "{:?}",
                     handle
-                        .find_node(dummy_info.clone(), DHTKey::from_hex(args[3]).unwrap())
+                        .find_node(&dummy_info, &DHTKey::from_hex(args[3]).unwrap())
                         .await
                 );
             }
@@ -88,7 +88,7 @@ async fn main() {
                 println!(
                     "{:?}",
                     handle
-                        .find_value(dummy_info.clone(), &DHTKey::hash(args[3].as_bytes()))
+                        .find_value(&dummy_info, &DHTKey::hash(args[3].as_bytes()))
                         .await
                         .unwrap()
                 );

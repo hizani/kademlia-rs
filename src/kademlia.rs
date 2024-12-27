@@ -8,7 +8,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, debug_span, error, info, instrument, trace, warn};
 
 use crate::routing::ParseNodeInfoError;
 use crate::rpc::{InitRpcError, SendMsgError};
@@ -234,12 +234,15 @@ impl Kademlia {
 
                 // TODO: add something like rate limiter to prevent DDOS attack.
                 tokio::spawn(async move {
+                    let span = debug_span!("reply", dst=%req_context.get_src().id);
+                    let span_guard = span.enter();
                     let rep = node
                         .handle_req(req_context.get_req(), req_context.get_src())
                         .await;
                     if let Err(e) = node.rpc.reply(req_context, rep).await {
                         error!("reply send error: {}", e)
                     }
+                    drop(span_guard)
                 });
             }
 
@@ -247,8 +250,8 @@ impl Kademlia {
         });
     }
 
-    async fn handle_req(&self, req: Request, src: NodeInfo) -> Reply {
-        self.append_with_refresh_no_error(src).await;
+    async fn handle_req(&self, req: Request, src: &NodeInfo) -> Reply {
+        self.append_with_refresh_no_error(src.clone()).await;
 
         match req {
             Request::Ping => Reply::Ping,
@@ -271,14 +274,15 @@ impl Kademlia {
         }
     }
 
-    pub async fn ping_raw(&self, dst: NodeInfo) -> Result<Reply> {
+    #[instrument(skip(self))]
+    pub async fn ping_raw(&self, dst: &NodeInfo) -> Result<Reply> {
         match self.rpc.send_req(Request::Ping, dst).await {
             Err(err) => {
                 if let RequestError::RequestTimeout = err {
-                    debug!("DST {} {}: Ping req timeout", dst.addr, dst.id);
+                    debug!("ping req timeout");
                     self.routes.remove(&dst.id).await;
                 } else {
-                    error!("DST {} {}: Ping req error: {}", dst.addr, dst.id, err);
+                    error!("ping req error: {}", err);
                 }
 
                 Err(err)
@@ -287,7 +291,8 @@ impl Kademlia {
         }
     }
 
-    pub async fn store_raw(&self, dst: NodeInfo, v: &str) -> Result<Reply> {
+    #[instrument(skip(self, v))]
+    pub async fn store_raw(&self, dst: &NodeInfo, v: &str) -> Result<Reply> {
         let k = DHTKey::hash(v.as_bytes());
 
         match self
@@ -297,10 +302,10 @@ impl Kademlia {
         {
             Err(err) => {
                 if let RequestError::RequestTimeout = err {
-                    debug!("DST {} {}: Store req timeout", dst.addr, dst.id);
+                    debug!("store req timeout");
                     self.routes.remove(&dst.id).await;
                 } else {
-                    error!("DST {} {}: Store req error: {}", dst.addr, dst.id, err);
+                    error!("store req error: {}", err);
                 }
 
                 Err(err)
@@ -309,14 +314,15 @@ impl Kademlia {
         }
     }
 
-    pub async fn find_node_raw(&self, dst: NodeInfo, key: DHTKey) -> Result<Reply> {
-        match self.rpc.send_req(Request::FindNode(key), dst).await {
+    #[instrument(skip(self))]
+    pub async fn find_node_raw(&self, dst: &NodeInfo, key: &DHTKey) -> Result<Reply> {
+        match self.rpc.send_req(Request::FindNode(key.clone()), dst).await {
             Err(err) => {
                 if let RequestError::RequestTimeout = err {
-                    debug!("DST {} {}: Find node req timeout", dst.addr, dst.id);
+                    debug!("find node req timeout");
                     self.routes.remove(&dst.id).await;
                 } else {
-                    error!("DST {} {}: Find node req error: {}", dst.addr, dst.id, err);
+                    error!("find node req error: {}", err);
                 }
 
                 Err(err)
@@ -325,18 +331,15 @@ impl Kademlia {
         }
     }
 
-    pub async fn find_value_raw(&self, dst: NodeInfo, k: &DHTKey) -> Result<Reply> {
-        match self
-            .rpc
-            .send_req(Request::FindValue(k.to_owned()), dst)
-            .await
-        {
+    #[instrument(skip(self))]
+    pub async fn find_value_raw(&self, dst: &NodeInfo, k: &DHTKey) -> Result<Reply> {
+        match self.rpc.send_req(Request::FindValue(k.clone()), dst).await {
             Err(err) => {
                 if let RequestError::RequestTimeout = err {
-                    debug!("DST {} {}: Find  value req timeout", dst.addr, dst.id);
+                    debug!("find value req timeout");
                     self.routes.remove(&dst.id).await;
                 } else {
-                    error!("DST {} {}: Find value req error: {}", dst.addr, dst.id, err);
+                    error!("find value req error: {}", err);
                 }
 
                 Err(err)
@@ -352,8 +355,8 @@ impl Kademlia {
         }
 
         if dsts.len() == 1 {
-            if let Ok(_) = self.ping_raw(dsts[0].clone()).await {
-                self.append_with_refresh_no_error(dsts[0]).await;
+            if let Ok(_) = self.ping_raw(&dsts[0]).await {
+                self.append_with_refresh_no_error(dsts[0].clone()).await;
                 return Some(());
             }
 
@@ -375,8 +378,10 @@ impl Kademlia {
 
                     let job = job.clone();
 
+                    let result = node.ping_raw(&job).await;
+
                     results
-                        .send((job, node.ping_raw(job).await))
+                        .send((job, result))
                         .expect("unreachable state: job receiver closed before the job sender");
                 }
 
@@ -410,11 +415,11 @@ impl Kademlia {
     }
 
     /// Pings dst and saves it to the routing table if it is connectable.
-    pub async fn ping(&self, dst: NodeInfo) -> Result<()> {
-        if let Err(e) = self.ping_raw(dst.clone()).await {
+    pub async fn ping(&self, dst: &NodeInfo) -> Result<()> {
+        if let Err(e) = self.ping_raw(&dst).await {
             Err(e)
         } else {
-            self.append_with_refresh_no_error(dst).await;
+            self.append_with_refresh_no_error(dst.clone()).await;
             Ok(())
         }
     }
@@ -423,29 +428,29 @@ impl Kademlia {
     //
     /// Pings dst and saves it to the routing table if it is connectable.
     /// Doesn't try to clean K-Bucket if there is no room for dst insertion
-    pub async fn ping_discard(&self, dst: NodeInfo) -> Result<()> {
-        if let Err(e) = self.ping_raw(dst.clone()).await {
+    pub async fn ping_discard(&self, dst: &NodeInfo) -> Result<()> {
+        if let Err(e) = self.ping_raw(dst).await {
             Err(e)
         } else {
-            _ = self.routes.update(dst, true);
+            _ = self.routes.update(dst.clone(), true);
             Ok(())
         }
     }
 
-    pub async fn store(&self, dst: NodeInfo, v: &str) -> Result<()> {
-        if let Err(e) = self.store_raw(dst.clone(), &v).await {
+    pub async fn store(&self, dst: &NodeInfo, v: &str) -> Result<()> {
+        if let Err(e) = self.store_raw(dst, v).await {
             Err(e)
         } else {
-            self.append_with_refresh_no_error(dst).await;
+            self.append_with_refresh_no_error(dst.clone()).await;
             Ok(())
         }
     }
 
-    pub async fn find_node(&self, dst: NodeInfo, id: DHTKey) -> Result<Vec<NodeAndDistance>> {
+    pub async fn find_node(&self, dst: &NodeInfo, id: &DHTKey) -> Result<Vec<NodeAndDistance>> {
         match self.find_node_raw(dst, id).await {
             Err(e) => Err(e),
             Ok(reply) => {
-                self.append_with_refresh_no_error(dst).await;
+                self.append_with_refresh_no_error(dst.clone()).await;
 
                 if let Reply::FindNode(nodes) = reply {
                     Ok(nodes)
@@ -457,11 +462,11 @@ impl Kademlia {
         }
     }
 
-    pub async fn find_value(&self, dst: NodeInfo, k: &DHTKey) -> Result<FindValueResult> {
-        match self.find_value_raw(dst.clone(), &k).await {
+    pub async fn find_value(&self, dst: &NodeInfo, k: &DHTKey) -> Result<FindValueResult> {
+        match self.find_value_raw(dst, k).await {
             Err(e) => Err(e),
             Ok(reply) => {
-                self.append_with_refresh_no_error(dst).await;
+                self.append_with_refresh_no_error(dst.clone()).await;
 
                 if let Reply::FindValue(result) = reply {
                     Ok(result)
@@ -482,14 +487,13 @@ impl Kademlia {
             return Vec::new();
         }
 
-        let id = id.clone();
-
         let mut closest_nodes = Vec::with_capacity(K_PARAM + 1);
 
         let (jobs_sender, jobs_receiver) = mpmc::unbounded();
         let (results_sender, mut results_receiver) = mpsc::unbounded_channel();
 
         for _ in 0..A_PARAM {
+            let id = id.clone();
             let jobs = jobs_receiver.clone();
             let results = results_sender.clone();
             let node = self.clone();
@@ -497,10 +501,12 @@ impl Kademlia {
                 while let Ok(job) = jobs.recv().await {
                     trace!("new job: {:?}", job);
 
-                    let node_info = job;
+                    let node_info: NodeInfo = job;
 
-                    if let Err(e) = results.send((node_info, node.find_node(node_info, id).await)) {
-                        trace!("can't send lookup_node result from {}: {}", node_info, e);
+                    let result = node.find_node(&node_info, &id).await;
+
+                    if let Err(e) = results.send((node_info, result)) {
+                        trace!("can't send lookup_node result: {}", e);
                     }
                 }
             });
@@ -543,7 +549,7 @@ impl Kademlia {
                     if let None = queried_nodes.get(&source) {
                         let source_distance = self.local_node_info.id.distance(&source.id);
 
-                        insert_to_closest_nodes(NodeAndDistance(source, source_distance));
+                        insert_to_closest_nodes(NodeAndDistance(source.clone(), source_distance));
                     }
 
                     for node in result {
@@ -552,7 +558,7 @@ impl Kademlia {
 
                             jobs_counter += 1;
 
-                            jobs_sender.send(node.0).await.expect(
+                            jobs_sender.send(node.0.clone()).await.expect(
                                 "unreachable state: job receiver closed before the job sender",
                             );
 
@@ -579,11 +585,11 @@ impl Kademlia {
             return None;
         }
 
-        let id = id.clone();
         let (jobs_sender, jobs_receiver) = mpmc::unbounded();
         let (results_sender, mut results_receiver) = mpsc::unbounded_channel();
 
         for _ in 0..A_PARAM {
+            let id = id.clone();
             let jobs = jobs_receiver.clone();
             let results = results_sender.clone();
             let node = self.clone();
@@ -593,8 +599,8 @@ impl Kademlia {
 
                     let node_info = job;
 
-                    if let Err(e) = results.send(node.find_value(node_info, &id).await) {
-                        trace!("can't send lookup_value result from {}: {}", node_info, e);
+                    if let Err(e) = results.send(node.find_value(&node_info, &id).await) {
+                        trace!("can't send lookup_value result from: {}", e);
                     }
                 }
             });
@@ -607,7 +613,7 @@ impl Kademlia {
 
         for node in closest_nodes {
             jobs_sender
-                .send(node.0)
+                .send(node.0.clone())
                 .await
                 .expect("unreachable state: job receiver closed before the job sender");
 
@@ -658,7 +664,7 @@ impl Kademlia {
         for NodeAndDistance(node_info, _) in candidates {
             let node = self.clone();
             let v = v.to_owned();
-            tokio::spawn(async move { _ = node.store(node_info, &v).await });
+            tokio::spawn(async move { _ = node.store(&node_info, &v).await });
         }
     }
 
@@ -670,7 +676,7 @@ impl Kademlia {
         let value = self.lookup_value(k).await;
         if let Some(v) = value {
             if let Some(closest_node) = self.routes.closest_nodes(k, 1).await.pop() {
-                if let Err(e) = self.store(closest_node.0.clone(), &v).await {
+                if let Err(e) = self.store(&closest_node.0, &v).await {
                     warn!(
                         "Can't store value {} in node {} {}: {}",
                         k, closest_node.0.addr, closest_node.0.id, e
@@ -689,7 +695,7 @@ impl Kademlia {
     pub async fn append_with_refresh(&self, node_info: NodeInfo) -> Result<()> {
         if let Err(update_err) = self.routes.update(node_info, true).await {
             for node in update_err.nodes {
-                if let Err(ping_err) = self.ping_discard(node).await {
+                if let Err(ping_err) = self.ping_discard(&node).await {
                     return Err(ping_err);
                 }
             }
@@ -701,9 +707,10 @@ impl Kademlia {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     async fn append_with_refresh_no_error(&self, node_info: NodeInfo) {
         if let Err(e) = self.append_with_refresh(node_info).await {
-            warn!("{}: Can't update routing table: {}", node_info.addr, e)
+            warn!("can't update routing table: {}", e)
         }
     }
 

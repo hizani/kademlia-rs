@@ -22,7 +22,7 @@ pub struct ErrBucketIsFull {
 #[error("{0}")]
 pub struct ParseNodeInfoError(String);
 
-#[derive(Hash, Eq, PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Hash, Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct NodeInfo {
     pub id: DHTKey,
     pub addr: SocketAddr,

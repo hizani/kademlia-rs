@@ -12,7 +12,7 @@ use std::simd;
 
 use crate::KEY_LEN;
 
-#[derive(Hash, Ord, PartialOrd, Eq, PartialEq, Clone, Copy, Deserialize, Serialize)]
+#[derive(Hash, Ord, PartialOrd, Eq, PartialEq, Clone, Deserialize, Serialize)]
 pub struct DHTKey([u8; KEY_LEN]);
 
 impl DHTKey {
@@ -107,7 +107,7 @@ impl FromHex for DHTKey {
     }
 }
 
-#[derive(Hash, PartialOrd, Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
+#[derive(Hash, PartialOrd, Eq, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Distance([u8; KEY_LEN]);
 
 impl Distance {
