@@ -225,7 +225,7 @@ impl RoutingTable {
         closest_nodes
     }
 
-    pub async fn remove(&self, key: &DHTKey) {
+    pub async fn remove_node(&self, key: &DHTKey) {
         if let Some((bucket, _)) = self.get_bucket_by_key(key) {
             let mut nodes = bucket.nodes.lock().await;
 

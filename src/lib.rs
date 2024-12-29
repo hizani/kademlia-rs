@@ -5,10 +5,8 @@ mod key;
 mod routing;
 mod rpc;
 
-// TODO: add comments at least for public functions.
-
 pub use kademlia::start;
-pub use kademlia::Kademlia;
+pub use kademlia::KademliaNode;
 pub use key::DHTKey;
 pub use routing::NodeInfo;
 

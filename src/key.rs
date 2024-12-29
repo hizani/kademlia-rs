@@ -17,13 +17,13 @@ use crate::KEY_LEN;
 pub struct DHTKey([u8; KEY_LEN]);
 
 impl DHTKey {
-    /// Initializes [Key] with a random, [KEY_LEN] long array.
+    /// Initializes [DHTKey] with a random, [KEY_LEN] long array.
     #[inline]
     pub fn random() -> DHTKey {
         DHTKey(rand::random())
     }
 
-    /// Returns the hashed [Key] of data.
+    /// Returns the hashed [DHTKey] of data.
     pub fn hash(data: &[u8]) -> DHTKey {
         let hash = sha256::hash(data);
         DHTKey(hash.into_bytes())

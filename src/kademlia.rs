@@ -50,7 +50,7 @@ pub struct KademliaBuilder {
 }
 
 #[derive(Clone)]
-pub struct Kademlia {
+pub struct KademliaNode {
     routes: Arc<RoutingTable>,
     store: Arc<Mutex<HashMap<DHTKey, String>>>,
     rpc: Arc<Rpc>,
@@ -88,10 +88,7 @@ pub enum RequestError {
 pub type Result<T> = core::result::Result<T, RequestError>;
 
 impl KademliaBuilder {
-    pub fn new() -> Self {
-        KademliaBuilder::default()
-    }
-
+    /// Sets a keypair.
     pub fn keypair(&mut self, keys: KeyPair) -> &mut Self {
         self.key_pair = Some(keys);
         self
@@ -169,7 +166,8 @@ impl KademliaBuilder {
         Ok(self)
     }
 
-    pub async fn start(&mut self) -> std::result::Result<Kademlia, KademliaStartError> {
+    /// Builds and starts a Kademlia node.
+    pub async fn start(&mut self) -> std::result::Result<KademliaNode, KademliaStartError> {
         let address = if let Some(address) = self.address {
             address
         } else {
@@ -191,7 +189,7 @@ impl KademliaBuilder {
 
         info!("new node created {} {}", local_key, rpc_address);
 
-        let node = Kademlia {
+        let node = KademliaNode {
             routes: Arc::new(RoutingTable::new(local_key.clone())),
             store: Arc::new(Mutex::new(HashMap::new())),
             rpc: Arc::new(rpc),
@@ -213,18 +211,18 @@ impl KademliaBuilder {
 
 /// Alias to [Kademlia::start]
 #[inline]
-pub async fn start() -> std::result::Result<Kademlia, KademliaStartError> {
-    Kademlia::start().await
+pub async fn start() -> std::result::Result<KademliaNode, KademliaStartError> {
+    KademliaNode::start().await
 }
 
-// TODO: Implement graceful shutdown (Pass CancellationToken to each function?)
-impl Kademlia {
+impl KademliaNode {
+    /// Starts Kademlia node with 0.0.0.0:0 socket and a random DHT key.
     pub async fn start() -> std::result::Result<Self, KademliaStartError> {
-        KademliaBuilder::new().start().await
+        KademliaBuilder::default().start().await
     }
 
     pub fn new() -> KademliaBuilder {
-        KademliaBuilder::new()
+        KademliaBuilder::default()
     }
 
     fn start_req_handler(self, mut rx: mpsc::Receiver<ReqContext>) {
@@ -277,12 +275,12 @@ impl Kademlia {
     }
 
     #[instrument(skip(self))]
-    pub async fn ping_raw(&self, dst: &NodeInfo) -> Result<Reply> {
+    async fn ping_raw(&self, dst: &NodeInfo) -> Result<Reply> {
         match self.rpc.send_req(Request::Ping, dst).await {
             Err(err) => {
                 if let RequestError::RequestTimeout = err {
                     debug!("ping req timeout");
-                    self.routes.remove(&dst.id).await;
+                    self.routes.remove_node(&dst.id).await;
                 } else {
                     error!("ping req error: {}", err);
                 }
@@ -294,7 +292,7 @@ impl Kademlia {
     }
 
     #[instrument(skip(self, v))]
-    pub async fn store_raw(&self, dst: &NodeInfo, v: &str) -> Result<Reply> {
+    async fn store_raw(&self, dst: &NodeInfo, v: &str) -> Result<Reply> {
         let k = DHTKey::hash(v.as_bytes());
 
         match self
@@ -305,7 +303,7 @@ impl Kademlia {
             Err(err) => {
                 if let RequestError::RequestTimeout = err {
                     debug!("store req timeout");
-                    self.routes.remove(&dst.id).await;
+                    self.routes.remove_node(&dst.id).await;
                 } else {
                     error!("store req error: {}", err);
                 }
@@ -317,12 +315,12 @@ impl Kademlia {
     }
 
     #[instrument(skip(self))]
-    pub async fn find_node_raw(&self, dst: &NodeInfo, key: &DHTKey) -> Result<Reply> {
+    async fn find_node_raw(&self, dst: &NodeInfo, key: &DHTKey) -> Result<Reply> {
         match self.rpc.send_req(Request::FindNode(key.clone()), dst).await {
             Err(err) => {
                 if let RequestError::RequestTimeout = err {
                     debug!("find node req timeout");
-                    self.routes.remove(&dst.id).await;
+                    self.routes.remove_node(&dst.id).await;
                 } else {
                     error!("find node req error: {}", err);
                 }
@@ -334,12 +332,12 @@ impl Kademlia {
     }
 
     #[instrument(skip(self))]
-    pub async fn find_value_raw(&self, dst: &NodeInfo, k: &DHTKey) -> Result<Reply> {
+    async fn find_value_raw(&self, dst: &NodeInfo, k: &DHTKey) -> Result<Reply> {
         match self.rpc.send_req(Request::FindValue(k.clone()), dst).await {
             Err(err) => {
                 if let RequestError::RequestTimeout = err {
                     debug!("find value req timeout");
-                    self.routes.remove(&dst.id).await;
+                    self.routes.remove_node(&dst.id).await;
                 } else {
                     error!("find value req error: {}", err);
                 }
@@ -434,6 +432,9 @@ impl Kademlia {
         }
     }
 
+    /// Sends [Store](Request::Store) request to a `dst` node.
+    ///
+    /// The `dst` node must store `v` on request arrival.
     pub async fn store(&self, dst: &NodeInfo, v: &str) -> Result<()> {
         if let Err(e) = self.store_raw(dst, v).await {
             Err(e)
@@ -443,6 +444,10 @@ impl Kademlia {
         }
     }
 
+    /// Sends [FindNode](Request::FindNode) request to a `dst` node.
+    ///
+    /// The `dst` node must reply with [NodeInfo](NodeInfo) of `id` or return a list
+    /// of [K_PARAM] known nodes closest to `id`.
     pub async fn find_node(&self, dst: &NodeInfo, id: &DHTKey) -> Result<Vec<NodeAndDistance>> {
         match self.find_node_raw(dst, id).await {
             Err(e) => Err(e),
@@ -459,8 +464,13 @@ impl Kademlia {
         }
     }
 
-    pub async fn find_value(&self, dst: &NodeInfo, k: &DHTKey) -> Result<FindValueResult> {
-        match self.find_value_raw(dst, k).await {
+    /// Sends [FindValue](Request::FindValue) request to a `dst` node.
+    ///
+    /// The `dst` node must reply with [NodeInfo](NodeInfo) of a node keeping
+    /// the value with `id` key or return a list of [K_PARAM] known nodes closest
+    /// to `id`.
+    pub async fn find_value(&self, dst: &NodeInfo, id: &DHTKey) -> Result<FindValueResult> {
+        match self.find_value_raw(dst, id).await {
             Err(e) => Err(e),
             Ok(reply) => {
                 self.append_with_refresh_no_error(dst.clone()).await;
@@ -576,6 +586,9 @@ impl Kademlia {
         closest_nodes
     }
 
+    /// Recursively looks for a value with `id` key through DHT.
+    ///
+    /// Returns [None] if the value was not found.
     pub async fn lookup_value(&self, id: &DHTKey) -> Option<String> {
         let closest_nodes = self.routes.closest_nodes(id, K_PARAM).await;
         if closest_nodes.is_empty() {
@@ -649,9 +662,14 @@ impl Kademlia {
         None
     }
 
+    /// Puts a value in DHT.
+    ///
+    /// Also saves the value in the local storage if there are less than
+    /// [K_PARAM] nodes in the routing table.
     pub async fn put(&self, v: &str) {
         let k = DHTKey::hash(v.as_bytes());
-        info!("key: {}", k);
+        debug!("putting key: {}", k);
+
         let candidates = self.routes.closest_nodes(&k, K_PARAM).await;
 
         if candidates.len() < K_PARAM {
@@ -665,7 +683,15 @@ impl Kademlia {
         }
     }
 
+    /// Gets a value with `id` key.
+    ///
+    /// Recursively looks for the value through DHT if the value is not present
+    /// in the local storage.
+    ///
+    /// Returns [None] if the value was not found.
     pub async fn get(&self, k: &DHTKey) -> Option<String> {
+        debug!("getting key: {}", k);
+
         if let Some(v) = self.store.lock().await.get(&k) {
             return Some(v.to_owned());
         }

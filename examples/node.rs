@@ -31,7 +31,7 @@ async fn main() {
     input.read_line(&mut buffer).unwrap();
     let params = buffer.trim_end().split(' ').collect::<Vec<_>>();
 
-    let mut handle = Kademlia::new();
+    let mut handle = KademliaNode::new();
     if params.len() >= 2 {
         let nodes = vec![NodeInfo {
             id: DHTKey::from_hex(params[0]).unwrap(),
