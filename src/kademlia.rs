@@ -200,7 +200,7 @@ impl KademliaBuilder {
         };
 
         if let Some(bootstrap_nodes) = &self.bootstrap_nodes {
-            node.ping_slice(bootstrap_nodes).await;
+            node.ping_slice(bootstrap_nodes, true).await;
         }
 
         node.clone().start_req_handler(req_rx);
@@ -349,7 +349,10 @@ impl KademliaNode {
     }
 
     /// Pings nodes from `dsts` and return the count of successful pings.
-    pub async fn ping_slice(&self, dsts: &[NodeInfo]) -> u32 {
+    ///
+    /// Doesn't try to clean K-Bucket if there is no room for dst insertion if
+    /// `discard` is true.
+    pub async fn ping_slice(&self, dsts: &[NodeInfo], discard: bool) -> u32 {
         if dsts.is_empty() {
             return 0;
         }
@@ -402,7 +405,12 @@ impl KademliaNode {
             trace!("ping_slice: new result: {:?}", result);
             let (pinged_node, result) = result;
             if let Ok(_) = result {
-                self.append_with_refresh_no_error(pinged_node).await;
+                if discard {
+                    _ = self.routes.update(pinged_node, true);
+                } else {
+                    self.append_with_refresh_no_error(pinged_node).await;
+                }
+
                 successful_pings += 1;
                 continue;
             }
@@ -413,10 +421,10 @@ impl KademliaNode {
         successful_pings
     }
 
-    /// Pings dst and saves it to the routing table if it is connectable.
+    /// Pings `dst` and saves it to the routing table if it is connectable.
     ///
     /// Doesn't try to clean K-Bucket if there is no room for dst insertion if
-    /// discard is true.
+    /// `discard` is true.
     pub async fn ping(&self, dst: &NodeInfo, discard: bool) -> Result<()> {
         if let Err(e) = self.ping_raw(&dst).await {
             Err(e)
