@@ -348,19 +348,19 @@ impl KademliaNode {
         }
     }
 
-    /// Returns [None] if at least one destination didn't respond.
-    pub async fn ping_slice(&self, dsts: &[NodeInfo]) -> Option<()> {
+    /// Pings nodes from `dsts` and return the count of successful pings.
+    pub async fn ping_slice(&self, dsts: &[NodeInfo]) -> u32 {
         if dsts.is_empty() {
-            return None;
+            return 0;
         }
 
         if dsts.len() == 1 {
             if let Ok(_) = self.ping_raw(&dsts[0]).await {
                 self.append_with_refresh_no_error(dsts[0].clone()).await;
-                return Some(());
+                return 1;
             }
 
-            return None;
+            return 0;
         }
 
         let mut successful_pings = 0;
@@ -404,14 +404,13 @@ impl KademliaNode {
             if let Ok(_) = result {
                 self.append_with_refresh_no_error(pinged_node).await;
                 successful_pings += 1;
+                continue;
             }
+
+            warn!("can't ping_slice a node: {pinged_node}")
         }
 
-        if successful_pings != dsts.len() {
-            None
-        } else {
-            Some(())
-        }
+        successful_pings
     }
 
     /// Pings dst and saves it to the routing table if it is connectable.
