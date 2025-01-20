@@ -2,7 +2,6 @@ use const_hex::FromHex;
 use kademlia::*;
 use std::{io, net::SocketAddr, str::FromStr};
 use tracing::error;
-use tracing_subscriber;
 
 const HELP: &str = r"
 help               ..print help message
@@ -31,7 +30,7 @@ async fn main() {
     input.read_line(&mut buffer).unwrap();
     let params = buffer.trim_end().split(' ').collect::<Vec<_>>();
 
-    let mut handle = KademliaNode::new();
+    let mut handle = KademliaNode::builder();
     if params.len() >= 2 {
         let nodes = vec![NodeInfo {
             id: DHTKey::from_hex(params[0]).unwrap(),
@@ -58,7 +57,7 @@ async fn main() {
             break;
         }
         let args = buffer.trim_end().split(' ').collect::<Vec<_>>();
-        match args[0].as_ref() {
+        match args[0] {
             "h" | "help" => {
                 println!("{}", HELP)
             }
@@ -108,7 +107,7 @@ async fn main() {
             "put" => {
                 println!("{:?}", handle.put(args[1]).await);
             }
-            "get" => match DHTKey::from_hex(args[1].as_bytes().to_owned()) {
+            "get" => match DHTKey::from_hex(args[1].as_bytes()) {
                 Ok(key) => println!("{:?}", handle.get(&key).await),
                 Err(e) => error!("can't get value by key: {}", e),
             },

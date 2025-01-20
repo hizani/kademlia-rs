@@ -1,7 +1,7 @@
 use const_hex::FromHex;
 use core::str;
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, fmt::Display, net::SocketAddr, str::FromStr};
+use std::{cmp::Ordering, fmt::Display, hash::Hash, net::SocketAddr, str::FromStr};
 use tokio::sync::Mutex;
 use tracing::{info, trace, warn};
 
@@ -32,9 +32,7 @@ impl TryFrom<&[u8]> for NodeInfo {
     type Error = ParseNodeInfoError;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        NodeInfo::from_str(
-            str::from_utf8(value).or_else(|e| Err(ParseNodeInfoError(e.to_string())))?,
-        )
+        NodeInfo::from_str(str::from_utf8(value).map_err(|e| ParseNodeInfoError(e.to_string()))?)
     }
 }
 
@@ -52,8 +50,8 @@ impl FromStr for NodeInfo {
 
         Ok(NodeInfo {
             addr: SocketAddr::from_str(socket_str)
-                .or_else(|e| Err(ParseNodeInfoError(e.to_string())))?,
-            id: DHTKey::from_hex(key_str).or_else(|e| Err(ParseNodeInfoError(e.to_string())))?,
+                .map_err(|e| ParseNodeInfoError(e.to_string()))?,
+            id: DHTKey::from_hex(key_str).map_err(|e| ParseNodeInfoError(e.to_string()))?,
         })
     }
 }
@@ -76,7 +74,7 @@ pub struct RoutingTable {
     buckets: Vec<Kbucket>,
 }
 
-#[derive(Eq, Hash, Clone, Debug, Serialize, Deserialize)]
+#[derive(Eq, Clone, Debug, Serialize, Deserialize)]
 pub struct NodeAndDistance(pub NodeInfo, pub Distance);
 
 impl PartialEq for NodeAndDistance {
@@ -114,8 +112,8 @@ impl RoutingTable {
 
             trace!("create bucket {bucket_n} with size = {max_size}")
         }
-        let routing_rable = RoutingTable { buckets, local_key };
-        routing_rable
+
+        RoutingTable { buckets, local_key }
     }
 
     /// Update the appropriate bucket with the new node's info

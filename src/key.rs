@@ -38,8 +38,8 @@ impl DHTKey {
     #[cfg(not(feature = "simd-unstable"))]
     pub fn distance(&self, y: &DHTKey) -> Distance {
         let mut result = [0; KEY_LEN];
-        for i in 0usize..KEY_LEN {
-            result[i] = self.0[i] ^ y.0[i];
+        for (i, r) in result.iter_mut().enumerate() {
+            *r = self.0[i] ^ y.0[i]
         }
 
         Distance(result)
@@ -102,7 +102,7 @@ impl From<[u8; KEY_LEN]> for DHTKey {
 impl From<&[u8; KEY_LEN]> for DHTKey {
     #[inline]
     fn from(value: &[u8; KEY_LEN]) -> Self {
-        DHTKey(value.clone())
+        DHTKey(*value)
     }
 }
 
@@ -145,7 +145,7 @@ impl FromHex for DHTKey {
     }
 }
 
-#[derive(Hash, PartialOrd, Eq, PartialEq, Clone, Serialize, Deserialize)]
+#[derive(Hash, Eq, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Distance([u8; KEY_LEN]);
 
 impl Distance {
@@ -197,6 +197,12 @@ impl Ord for Distance {
         }
 
         Ordering::Equal
+    }
+}
+
+impl PartialOrd for Distance {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 

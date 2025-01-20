@@ -180,7 +180,7 @@ impl KademliaBuilder {
             KeyPair::gen()
         };
 
-        let local_key = DHTKey::from(key_pair.public_key.as_array().clone());
+        let local_key = DHTKey::from(*key_pair.public_key.as_array());
 
         let (req_tx, req_rx) = tokio::sync::mpsc::channel(1024);
         let rpc = Rpc::new(SocketAddr::new(address, self.port), req_tx, key_pair).await?;
@@ -221,7 +221,7 @@ impl KademliaNode {
         KademliaBuilder::default().start().await
     }
 
-    pub fn new() -> KademliaBuilder {
+    pub fn builder() -> KademliaBuilder {
         KademliaBuilder::default()
     }
 
@@ -358,7 +358,7 @@ impl KademliaNode {
         }
 
         if dsts.len() == 1 {
-            if let Ok(_) = self.ping_raw(&dsts[0]).await {
+            if self.ping_raw(&dsts[0]).await.is_ok() {
                 self.append_with_refresh_no_error(dsts[0].clone()).await;
                 return 1;
             }
@@ -404,7 +404,7 @@ impl KademliaNode {
         while let Some(result) = results_receiver.recv().await {
             trace!("ping_slice: new result: {:?}", result);
             let (pinged_node, result) = result;
-            if let Ok(_) = result {
+            if result.is_ok() {
                 if discard {
                     _ = self.routes.update(pinged_node, true);
                 } else {
@@ -426,7 +426,7 @@ impl KademliaNode {
     /// Doesn't try to clean K-Bucket if there is no room for dst insertion if
     /// `discard` is true.
     pub async fn ping(&self, dst: &NodeInfo, discard: bool) -> Result<()> {
-        if let Err(e) = self.ping_raw(&dst).await {
+        if let Err(e) = self.ping_raw(dst).await {
             Err(e)
         } else {
             if discard {
@@ -558,29 +558,27 @@ impl KademliaNode {
 
             // source is used only for nodes taken from the local routing table.
             let (source, result) = job_result;
-            match result {
-                Ok(result) => {
-                    if let None = queried_nodes.get(&source) {
-                        let source_distance = self.local_node_info.id.distance(&source.id);
+            if let Ok(result) = result {
+                if !queried_nodes.contains(&source) {
+                    let source_distance = self.local_node_info.id.distance(&source.id);
 
-                        insert_to_closest_nodes(NodeAndDistance(source.clone(), source_distance));
-                    }
+                    insert_to_closest_nodes(NodeAndDistance(source.clone(), source_distance));
+                }
 
-                    for node in result {
-                        if let None = queried_nodes.get(&node.0) {
-                            insert_to_closest_nodes(node.clone());
+                for node in result {
+                    if !queried_nodes.contains(&node.0) {
+                        insert_to_closest_nodes(node.clone());
 
-                            jobs_counter += 1;
+                        jobs_counter += 1;
 
-                            jobs_sender.send(node.0.clone()).await.expect(
-                                "unreachable state: job receiver closed before the job sender",
-                            );
+                        jobs_sender
+                            .send(node.0.clone())
+                            .await
+                            .expect("unreachable state: job receiver closed before the job sender");
 
-                            queried_nodes.insert(node.0);
-                        }
+                        queried_nodes.insert(node.0);
                     }
                 }
-                _ => {}
             }
 
             queried_nodes.insert(source);
@@ -640,11 +638,11 @@ impl KademliaNode {
         while let Some(job_result) = results_receiver.recv().await {
             trace!("new job result: {:?}", job_result);
             jobs_counter -= 1;
-            match job_result {
-                Ok(result) => match result {
+            if let Ok(result) = job_result {
+                match result {
                     FindValueResult::Nodes(nodes) => {
                         for node in nodes {
-                            if let None = queried_nodes.get(&node.0) {
+                            if !queried_nodes.contains(&node.0) {
                                 jobs_counter += 1;
 
                                 jobs_sender.send(node.0.clone()).await.expect(
@@ -657,8 +655,7 @@ impl KademliaNode {
                     FindValueResult::Value(value) => {
                         return Some(value);
                     }
-                },
-                _ => {}
+                }
             }
 
             if jobs_counter == 0 {
@@ -699,7 +696,7 @@ impl KademliaNode {
     pub async fn get(&self, k: &DHTKey) -> Option<String> {
         debug!("getting key: {}", k);
 
-        if let Some(v) = self.store.lock().await.get(&k) {
+        if let Some(v) = self.store.lock().await.get(k) {
             return Some(v.to_owned());
         }
 
@@ -725,9 +722,7 @@ impl KademliaNode {
     pub async fn append_with_refresh(&self, node_info: NodeInfo) -> Result<()> {
         if let Err(update_err) = self.routes.update(node_info, true).await {
             for node in update_err.nodes {
-                if let Err(ping_err) = Box::pin(self.ping(&node, true)).await {
-                    return Err(ping_err);
-                }
+                Box::pin(self.ping(&node, true)).await?
             }
 
             // discard dst if there is still no room after pinging whole K-Bucket

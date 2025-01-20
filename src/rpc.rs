@@ -83,7 +83,7 @@ impl Rpc {
 
         let rpc = Rpc {
             node_info: NodeInfo {
-                id: DHTKey::from(key_pair.public_key.as_array().clone()),
+                id: DHTKey::from(*key_pair.public_key.as_array()),
                 addr: socket.local_addr()?,
             },
             key_pair,
@@ -145,9 +145,9 @@ impl Rpc {
                                 addr: src_addr,
                                 id: src_dhtkey,
                             },
-                            req: req,
+                            req,
                         };
-                        if let Err(_) = tx.send(req_handle).await {
+                        if tx.send(req_handle).await.is_err() {
                             info!("Closing channel, since receiver is dead.");
                             break;
                         }
@@ -173,9 +173,8 @@ impl Rpc {
                 Some(tx) => _ = tx.send(rep),
                 None => {
                     warn!("Unsolicited reply received, ignoring.");
-                    return;
                 }
-            };
+            }
         });
     }
 
@@ -187,7 +186,7 @@ impl Rpc {
         rep: Reply,
     ) -> Result<(), SendMsgError> {
         let rep_rmsg = RpcMessage {
-            req_id: req_id,
+            req_id,
             msg: Message::Reply(rep),
         };
 
@@ -206,14 +205,14 @@ impl Rpc {
             dst_key.into(),
             &self.key_pair.secret_key,
         )
-        .or_else(|e| Err(SendMsgError::CantEncryptMsg(e)))?;
+        .map_err(SendMsgError::CantEncryptMsg)?;
 
         let payload = rmp_serde::to_vec(&EncryptedPayload {
             src_pubkey: PublicKey::from(<[u8; KEY_LEN]>::from(self.node_info.id.clone())),
             nonce,
             ciphertext: encrypted_box,
         })
-        .or_else(|e| Err(SendMsgError::CantSerializeMsg(e)))?;
+        .map_err(SendMsgError::CantSerializeMsg)?;
 
         self.socket.send_to(&payload, &dst.addr).await?;
 
@@ -238,7 +237,7 @@ impl Rpc {
             msg: Message::Request(req),
         };
 
-        self.send_msg(&rmsg, &dst).await?;
+        self.send_msg(&rmsg, dst).await?;
 
         let rpc = self.clone();
 
