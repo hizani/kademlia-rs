@@ -30,7 +30,7 @@ async fn main() {
     input.read_line(&mut buffer).unwrap();
     let params = buffer.trim_end().split(' ').collect::<Vec<_>>();
 
-    let mut handle = KademliaNode::builder();
+    let mut handle = KademliaNode::setup();
     if params.len() >= 2 {
         let nodes = vec![NodeInfo {
             id: DHTKey::from_hex(params[0]).unwrap(),
@@ -41,7 +41,7 @@ async fn main() {
     }
 
     let handle = handle
-        .address("127.0.0.1".parse().unwrap())
+        .address("127.0.0.1:0".parse().unwrap())
         .start()
         .await
         .unwrap();

@@ -4,7 +4,7 @@ use dryoc::types::ByteArray;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
@@ -44,8 +44,7 @@ pub enum Reply {
 #[derive(Default)]
 pub struct KademliaBuilder {
     bootstrap_nodes: Option<Vec<NodeInfo>>,
-    address: Option<IpAddr>,
-    port: u16,
+    address: Option<SocketAddr>,
     key_pair: Option<KeyPair>,
 }
 
@@ -119,13 +118,8 @@ impl KademliaBuilder {
         Ok(self)
     }
 
-    pub fn address(&mut self, address: IpAddr) -> &mut Self {
+    pub fn address(&mut self, address: SocketAddr) -> &mut Self {
         self.address = Some(address);
-        self
-    }
-
-    pub fn port(&mut self, port: u16) -> &mut Self {
-        self.port = port;
         self
     }
 
@@ -171,7 +165,7 @@ impl KademliaBuilder {
         let address = if let Some(address) = self.address {
             address
         } else {
-            IpAddr::V4(Ipv4Addr::from_bits(0))
+            SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from_bits(0), 0))
         };
 
         let key_pair = if let Some(pair) = &self.key_pair {
@@ -183,7 +177,7 @@ impl KademliaBuilder {
         let local_key = DHTKey::from(*key_pair.public_key.as_array());
 
         let (req_tx, req_rx) = tokio::sync::mpsc::channel(1024);
-        let rpc = Rpc::new(SocketAddr::new(address, self.port), req_tx, key_pair).await?;
+        let rpc = Rpc::new(address, req_tx, key_pair).await?;
 
         let rpc_address = rpc.get_address().unwrap();
 
@@ -221,7 +215,7 @@ impl KademliaNode {
         KademliaBuilder::default().start().await
     }
 
-    pub fn builder() -> KademliaBuilder {
+    pub fn setup() -> KademliaBuilder {
         KademliaBuilder::default()
     }
 
