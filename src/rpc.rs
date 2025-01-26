@@ -52,7 +52,6 @@ pub(crate) struct ReqContext {
 pub(crate) struct Rpc {
     socket: Arc<UdpSocket>,
     pending: Arc<Mutex<HashMap<RequestId, tokio::sync::oneshot::Sender<Reply>>>>,
-    node_info: NodeInfo,
     key_pair: KeyPair,
 }
 
@@ -82,10 +81,6 @@ impl Rpc {
         let socket = UdpSocket::bind(addr).await?;
 
         let rpc = Rpc {
-            node_info: NodeInfo {
-                id: DHTKey::from(*key_pair.public_key.as_array()),
-                addr: socket.local_addr()?,
-            },
             key_pair,
             socket: Arc::new(socket),
             pending: Arc::new(Mutex::new(HashMap::new())),
@@ -208,7 +203,9 @@ impl Rpc {
         .map_err(SendMsgError::CantEncryptMsg)?;
 
         let payload = rmp_serde::to_vec(&EncryptedPayload {
-            src_pubkey: PublicKey::from(<[u8; KEY_LEN]>::from(self.node_info.id.clone())),
+            src_pubkey: PublicKey::from(<[u8; KEY_LEN]>::from(DHTKey::from(
+                *self.key_pair.public_key.as_array(),
+            ))),
             nonce,
             ciphertext: encrypted_box,
         })
