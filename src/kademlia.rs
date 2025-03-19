@@ -133,10 +133,13 @@ impl KademliaBuilder {
         &mut self,
         reader: &mut impl Read,
     ) -> std::result::Result<&mut Self, ReadBootstrapError> {
-        const BUFLEN: usize = 47 + KEY_LEN * 2;
+        const SOCKET_MAX_LEN: usize = 54;
+        const BUFLEN: usize = SOCKET_MAX_LEN + KEY_LEN + 2;
+
         let mut buf = Vec::with_capacity(BUFLEN);
         let mut nodes = Vec::new();
 
+        #[allow(clippy::unbuffered_bytes)]
         for byte in reader.bytes() {
             match byte {
                 Ok(byte) => {
@@ -154,7 +157,9 @@ impl KademliaBuilder {
             }
         }
 
-        nodes.push(NodeInfo::try_from(buf.as_slice())?);
+        if !buf.is_empty() {
+            nodes.push(NodeInfo::try_from(buf.as_slice())?);
+        }
 
         self.bootstrap_nodes = Some(nodes);
         Ok(self)
