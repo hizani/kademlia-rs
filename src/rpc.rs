@@ -87,72 +87,7 @@ impl Rpc {
         };
 
         let rpc_clone = rpc.clone();
-        tokio::spawn(async move {
-            let mut buf = [0u8; MESSAGE_LEN];
-            loop {
-                let (len, src_addr) = match rpc.socket.recv_from(&mut buf).await {
-                    Ok(node_info) => node_info,
-                    Err(err) => {
-                        error!("failed to receive datagram from a socket: {}", err);
-                        continue;
-                    }
-                };
-
-                let payload: EncryptedPayload = match rmp_serde::from_slice(&buf[..len]) {
-                    Ok(p) => p,
-                    Err(err) => {
-                        warn!("message received, but cannot be parsed: {}", err);
-                        continue;
-                    }
-                };
-
-                let plaintext = match payload.ciphertext.decrypt_to_vec(
-                    &payload.nonce,
-                    &payload.src_pubkey,
-                    &rpc.key_pair.secret_key,
-                ) {
-                    Ok(plaintext) => plaintext,
-                    Err(err) => {
-                        warn!("message received, but cannot be decrypted: {}", err);
-                        continue;
-                    }
-                };
-
-                let rpc_msg: RpcMessage = match rmp_serde::from_slice(&plaintext) {
-                    Ok(rmsg) => rmsg,
-                    Err(err) => {
-                        warn!("message decrypted, but cannot be parsed: {}", err);
-                        continue;
-                    }
-                };
-
-                let src_dhtkey = DHTKey::from(payload.src_pubkey.as_array());
-
-                debug_span!("incoming", src=%src_dhtkey).in_scope(|| {
-                    debug!("{:?}", rpc_msg.msg);
-                });
-
-                match rpc_msg.msg {
-                    Message::Request(req) => {
-                        let req_handle = ReqContext {
-                            req_id: rpc_msg.req_id,
-                            src: NodeInfo {
-                                addr: src_addr,
-                                id: src_dhtkey,
-                            },
-                            req,
-                        };
-                        if tx.send(req_handle).await.is_err() {
-                            info!("Closing channel, since receiver is dead.");
-                            break;
-                        }
-                    }
-                    Message::Reply(rep) => {
-                        rpc.clone().handle_rep(rpc_msg.req_id, rep).await;
-                    }
-                }
-            }
-        });
+        tokio::spawn(rpc.message_recv(tx));
 
         Ok(rpc_clone)
     }
@@ -245,6 +180,73 @@ impl Rpc {
             Err(_) => {
                 rpc.pending.lock().await.remove(&req_id);
                 Err(RequestError::RequestTimeout)
+            }
+        }
+    }
+
+    async fn message_recv(self, tx: Sender<ReqContext>) {
+        let mut buf = [0u8; MESSAGE_LEN];
+        loop {
+            let (len, src_addr) = match self.socket.recv_from(&mut buf).await {
+                Ok(node_info) => node_info,
+                Err(err) => {
+                    error!("failed to receive datagram from a socket: {}", err);
+                    continue;
+                }
+            };
+
+            let payload: EncryptedPayload = match rmp_serde::from_slice(&buf[..len]) {
+                Ok(p) => p,
+                Err(err) => {
+                    warn!("message received, but cannot be parsed: {}", err);
+                    continue;
+                }
+            };
+
+            let plaintext = match payload.ciphertext.decrypt_to_vec(
+                &payload.nonce,
+                &payload.src_pubkey,
+                &self.key_pair.secret_key,
+            ) {
+                Ok(plaintext) => plaintext,
+                Err(err) => {
+                    warn!("message received, but cannot be decrypted: {}", err);
+                    continue;
+                }
+            };
+
+            let rpc_msg: RpcMessage = match rmp_serde::from_slice(&plaintext) {
+                Ok(rmsg) => rmsg,
+                Err(err) => {
+                    warn!("message decrypted, but cannot be parsed: {}", err);
+                    continue;
+                }
+            };
+
+            let src_dhtkey = DHTKey::from(payload.src_pubkey.as_array());
+
+            debug_span!("incoming", src=%src_dhtkey).in_scope(|| {
+                debug!("{:?}", rpc_msg.msg);
+            });
+
+            match rpc_msg.msg {
+                Message::Request(req) => {
+                    let req_handle = ReqContext {
+                        req_id: rpc_msg.req_id,
+                        src: NodeInfo {
+                            addr: src_addr,
+                            id: src_dhtkey,
+                        },
+                        req,
+                    };
+                    if tx.send(req_handle).await.is_err() {
+                        info!("Closing channel, since receiver is dead.");
+                        break;
+                    }
+                }
+                Message::Reply(rep) => {
+                    self.clone().handle_rep(rpc_msg.req_id, rep).await;
+                }
             }
         }
     }
