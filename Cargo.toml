@@ -17,7 +17,12 @@ thiserror = "2.0"
 tokio = { version = "1.42", features = ["full"] }
 async-channel = "2.3"
 tracing = "0.1"
-dryoc = { version = "0.6", features = ["serde"] }
+scc = "2"
+dryoc = { git = "https://github.com/brndnmtthws/dryoc", features = [
+    "serde",
+    "nightly",
+] }
+zeroize = "1.8"
 
 [dev-dependencies]
 tracing-subscriber = "0.3"

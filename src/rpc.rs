@@ -1,4 +1,5 @@
-use dryoc::dryocbox::{KeyPair, Nonce, PublicKey, VecBox};
+use dryoc::dryocbox::protected::LockedKeyPair;
+use dryoc::dryocbox::{Nonce, PublicKey, VecBox};
 use dryoc::types::{ByteArray, NewByteArray};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -13,6 +14,7 @@ use tokio::time::Duration;
 use tracing::{debug, debug_span, error, info, warn};
 
 use crate::kademlia::RequestError;
+use crate::session::SessionBox;
 use crate::KEY_LEN;
 use crate::{
     kademlia::{Reply, Request},
@@ -48,11 +50,12 @@ pub(crate) struct ReqContext {
     pub req: Request,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct Rpc {
     socket: Arc<UdpSocket>,
     pending: Arc<Mutex<HashMap<RequestId, tokio::sync::oneshot::Sender<Reply>>>>,
-    key_pair: KeyPair,
+    session_box: Arc<SessionBox>,
+    key_pair: Arc<LockedKeyPair>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -76,14 +79,18 @@ impl Rpc {
     pub async fn new(
         addr: SocketAddr,
         tx: Sender<ReqContext>,
-        key_pair: KeyPair,
+        key_pair: LockedKeyPair,
     ) -> Result<Rpc, InitRpcError> {
         let socket = UdpSocket::bind(addr).await?;
 
         let rpc = Rpc {
-            key_pair,
+            key_pair: Arc::new(key_pair),
             socket: Arc::new(socket),
             pending: Arc::new(Mutex::new(HashMap::new())),
+            session_box: Arc::new(SessionBox::new(
+                Duration::from_secs(60),
+                Duration::from_secs(30),
+            )),
         };
 
         let rpc_clone = rpc.clone();
@@ -127,15 +134,29 @@ impl Rpc {
     async fn send_msg(&self, rpc_msg: &RpcMessage, dst: &NodeInfo) -> Result<(), SendMsgError> {
         let dst_key = &dst.id;
 
-        let message = rmp_serde::to_vec(rpc_msg)?;
+        let message = rmp_serde::encode::to_vec(rpc_msg)?;
         let nonce = Nonce::gen();
-        let encrypted_box = dryoc::dryocbox::VecBox::encrypt_to_vecbox(
-            &message,
-            &nonce,
-            dst_key.into(),
-            &self.key_pair.secret_key,
-        )
-        .map_err(SendMsgError::CantEncryptMsg)?;
+
+        let encrypted_box = match self
+            .session_box
+            .get_or_generate_session_key(dst_key.as_array(), &self.key_pair.secret_key)
+            .await
+        {
+            Ok(session_key) => VecBox::precalc_encrypt_to_vecbox(&message, &nonce, &session_key)
+                .map_err(SendMsgError::CantEncryptMsg)?,
+
+            Err(err) => {
+                error!("fallback to public key encryption: {}", err);
+
+                VecBox::encrypt_to_vecbox(
+                    &message,
+                    &nonce,
+                    dst_key.into(),
+                    &self.key_pair.secret_key,
+                )
+                .map_err(SendMsgError::CantEncryptMsg)?
+            }
+        };
 
         let payload = rmp_serde::to_vec(&EncryptedPayload {
             src_pubkey: PublicKey::from(<[u8; KEY_LEN]>::from(DHTKey::from(
@@ -203,15 +224,35 @@ impl Rpc {
                 }
             };
 
-            let plaintext = match payload.ciphertext.decrypt_to_vec(
-                &payload.nonce,
-                &payload.src_pubkey,
-                &self.key_pair.secret_key,
-            ) {
-                Ok(plaintext) => plaintext,
+            let plaintext = match self
+                .session_box
+                .get_or_generate_session_key(&payload.src_pubkey, &self.key_pair.secret_key)
+                .await
+            {
+                Ok(session_key) => match payload
+                    .ciphertext
+                    .precalc_decrypt_to_vec(&payload.nonce, &session_key)
+                {
+                    Ok(plaintext) => plaintext,
+                    Err(err) => {
+                        warn!("message received, but cannot be decrypted: {}", err);
+                        continue;
+                    }
+                },
                 Err(err) => {
-                    warn!("message received, but cannot be decrypted: {}", err);
-                    continue;
+                    error!("fallback to public key encryption: {}", err);
+
+                    match payload.ciphertext.decrypt_to_vec(
+                        &payload.nonce,
+                        &payload.src_pubkey,
+                        &self.key_pair.secret_key,
+                    ) {
+                        Ok(plaintext) => plaintext,
+                        Err(err) => {
+                            warn!("message received, but cannot be decrypted: {}", err);
+                            continue;
+                        }
+                    }
                 }
             };
 

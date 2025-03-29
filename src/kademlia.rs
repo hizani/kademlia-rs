@@ -1,6 +1,7 @@
 use async_channel as mpmc;
-use dryoc::dryocbox::{KeyPair, SecretKey};
-use dryoc::types::ByteArray;
+use dryoc::dryocbox::protected::{LockedKeyPair, SecretKey};
+use dryoc::protected::Locked;
+use dryoc::types::{ByteArray, MutBytes, NewByteArray};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read};
@@ -9,6 +10,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 use tracing::{debug, debug_span, error, info, instrument, trace, warn};
+use zeroize::Zeroize;
 
 use crate::routing::ParseNodeInfoError;
 use crate::rpc::{InitRpcError, SendMsgError};
@@ -45,7 +47,7 @@ pub enum Reply {
 pub struct KademliaBuilder {
     bootstrap_nodes: Option<Vec<NodeInfo>>,
     address: Option<SocketAddr>,
-    key_pair: Option<KeyPair>,
+    key_pair: Option<LockedKeyPair>,
 }
 
 #[derive(Clone)]
@@ -88,31 +90,27 @@ pub type Result<T> = core::result::Result<T, RequestError>;
 
 impl KademliaBuilder {
     /// Sets a keypair.
-    pub fn keypair(&mut self, keys: KeyPair) -> &mut Self {
+    pub fn keypair(&mut self, keys: LockedKeyPair) -> &mut Self {
         self.key_pair = Some(keys);
         self
     }
 
-    /// Derives a keypair from a secret key.
-    pub fn keypair_from_sk(&mut self, sk: SecretKey) -> &mut Self {
-        let key_pair = KeyPair::from_secret_key(sk);
-
-        self.key_pair = Some(key_pair);
-        self
-    }
-
     /// Reads a secret key from reader and derives a keypair from it.
+    ///
+    /// Don't forget to zeroize a buffer if you're using buffered reader.
     pub fn keypair_read_sk(
         &mut self,
         reader: &mut impl Read,
     ) -> std::result::Result<&mut Self, ReadSecretKeyError> {
         const KEY_LEN: usize = dryoc::constants::CRYPTO_BOX_SECRETKEYBYTES;
         let mut buf = [0; KEY_LEN];
+        let mut sk = Locked::<SecretKey>::new_byte_array();
 
         reader.read_exact(&mut buf)?;
+        sk.copy_from_slice(&buf);
+        buf.zeroize();
 
-        let sk = SecretKey::from(buf);
-        let key_pair = KeyPair::from_secret_key(sk);
+        let key_pair = LockedKeyPair::from_secret_key(sk);
 
         self.key_pair = Some(key_pair);
         Ok(self)
@@ -174,15 +172,29 @@ impl KademliaBuilder {
         };
 
         let key_pair = if let Some(pair) = &self.key_pair {
-            pair.clone()
+            let mut public_key = Locked::new_byte_array();
+            let mut secret_key = Locked::new_byte_array();
+
+            public_key.copy_from_slice(&pair.public_key);
+            secret_key.copy_from_slice(&pair.secret_key);
+
+            LockedKeyPair {
+                public_key,
+                secret_key,
+            }
         } else {
-            KeyPair::gen()
+            LockedKeyPair::gen()
         };
+
+        let mut locked_secret = Locked::new_byte_array();
+        locked_secret.copy_from_slice(&key_pair.secret_key);
+
+        let locked_pair = LockedKeyPair::from_secret_key(locked_secret);
 
         let local_key = DHTKey::from(*key_pair.public_key.as_array());
 
         let (req_tx, req_rx) = tokio::sync::mpsc::channel(1024);
-        let rpc = Rpc::new(address, req_tx, key_pair).await?;
+        let rpc = Rpc::new(address, req_tx, locked_pair).await?;
 
         let rpc_address = rpc.get_address().unwrap();
 

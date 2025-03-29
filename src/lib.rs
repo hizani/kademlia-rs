@@ -4,6 +4,7 @@ mod kademlia;
 mod key;
 mod routing;
 mod rpc;
+mod session;
 
 pub use kademlia::start;
 pub use kademlia::KademliaNode;
